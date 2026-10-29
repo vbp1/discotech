@@ -22,6 +22,8 @@ export type FileContent = { realPath: string | null } & (
   | { kind: 'text'; text: string; size: number; mtimeMs: number }
   | { kind: 'binary'; size: number }
   | { kind: 'too-large'; size: number; limit: number }
+  /** Nothing is at the path: the file was deleted or moved away. */
+  | { kind: 'missing' }
 )
 
 export type WriteResult =
@@ -56,6 +58,8 @@ export type DiscotechApi = {
   readFile(project: Project, linuxPath: string): Promise<FileContent>
   /** Writes text; expectedMtimeMs null skips the on-disk change check (explicit overwrite). */
   writeFile(project: Project, linuxPath: string, text: string, expectedMtimeMs: number | null): Promise<WriteResult>
+  /** Creates a file that is not on disk, with any missing folders; a conflict when something is already there. */
+  createFile(project: Project, linuxPath: string, text: string): Promise<WriteResult>
   /**
    * Moves or copies a file or folder into toDir. A taken name comes back as "exists" with nothing
    * changed, unless overwrite: then a file is replaced and a folder merged. A copy into its own
@@ -80,7 +84,12 @@ export type DiscotechApi = {
 }
 
 /** An open tab; at most one per project is unpinned (the preview tab). */
-export type SessionTab = { path: string; pinned: boolean }
+export type SessionTab = {
+  path: string
+  pinned: boolean
+  /** The text a tab holds for a file no longer at its path. */
+  orphanText?: string
+}
 
 /** What was open when the app last ran. */
 export type SessionState = {

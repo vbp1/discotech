@@ -1,6 +1,6 @@
 import { FileText, Pin, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import type { Project } from '../../shared/api'
+import type { Project, SessionTab } from '../../shared/api'
 import { confirmDialog } from './confirm'
 import { baseName } from './paths'
 import { TabBody } from './TabBody'
@@ -18,7 +18,7 @@ export type PathNotice =
 
 // At most one tab is unpinned: the preview tab that the next opened file replaces.
 // A tab with unsaved edits is always pinned.
-type Tab = { path: string; pinned: boolean }
+type Tab = SessionTab
 
 type Props = {
   project: Project
@@ -102,12 +102,29 @@ export function EditorArea(props: Props): React.JSX.Element {
 
   const onLineRevealed = useCallback(() => setReveal(null), [])
 
+  const onOrphanTextChange = useCallback((path: string, text: string | null) => {
+    setTabs((prev) => {
+      const tab = prev.find((t) => t.path === path)
+      if (!tab || (tab.orphanText ?? null) === text) return prev
+      return prev.map((t) => {
+        if (t.path !== path) return t
+        if (text !== null) return { ...t, orphanText: text }
+        const { orphanText: _dropped, ...rest } = t
+        return rest
+      })
+    })
+  }, [])
+
   const closeTab = async (path: string): Promise<void> => {
+    // A gone file's text lives only in its tab.
+    const orphan = tabs.find((t) => t.path === path)?.orphanText !== undefined
     if (
-      dirty.has(path) &&
+      (dirty.has(path) || orphan) &&
       !(await confirmDialog({
         title: `Закрыть «${baseName(path)}»?`,
-        description: 'Есть несохранённые правки, они пропадут.',
+        description: orphan
+          ? 'Файла больше нет на прежнем месте, его текст есть только в этой вкладке и пропадёт.'
+          : 'Есть несохранённые правки, они пропадут.',
         confirmLabel: 'Закрыть без сохранения',
         destructive: true
       }))
@@ -191,6 +208,8 @@ export function EditorArea(props: Props): React.JSX.Element {
           onLineRevealed={onLineRevealed}
           onDirtyChange={onDirtyChange}
           onDeletedChange={onDeletedChange}
+          orphanText={t.orphanText ?? null}
+          onOrphanTextChange={onOrphanTextChange}
         />
       ))}
     </div>

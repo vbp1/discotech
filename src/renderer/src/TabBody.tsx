@@ -3,6 +3,7 @@ import { CodeXml, Eye, PencilLine } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { Project } from '../../shared/api'
+import { confirmDialog } from './confirm'
 import { errorText } from './errors'
 import { HtmlPreview } from './HtmlPreview'
 import { MarkdownEditor, type MarkdownEditorHandle } from './MarkdownEditor'
@@ -15,7 +16,8 @@ type FileState =
   | { status: 'deleted' }
   | { status: 'binary'; size: number }
   | { status: 'too-large'; size: number; limit: number }
-  | { status: 'text'; savedText: string; mtimeMs: number; realPath: string | null }
+  /** gone: nothing is at the path any more; the tab keeps the text it had. */
+  | { status: 'text'; savedText: string; mtimeMs: number; realPath: string | null; gone: boolean }
 
 type Notice =
   | { kind: 'disk-changed' }
@@ -33,11 +35,16 @@ type Props = {
   onLineRevealed(): void
   onDirtyChange(path: string, dirty: boolean): void
   onDeletedChange(path: string, deleted: boolean): void
+  /** Text kept from the session for a file that was gone when the app last ran. */
+  orphanText: string | null
+  /** The text of a gone file, to keep across restarts; null when the file is in place. */
+  onOrphanTextChange(path: string, text: string | null): void
 }
 
 const MARKDOWN_RE = /\.(md|markdown)$/i
 const HTML_RE = /\.html?$/i
 const DIRTY_CHECK_DELAY_MS = 300
+const ORPHAN_SAVE_DELAY_MS = 500
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} Б`
@@ -63,12 +70,15 @@ export function TabBody(props: Props): React.JSX.Element {
   const scheme = useColorScheme()
 
   const savedText = file.status === 'text' ? file.savedText : null
-  const dirty =
-    savedText !== null && (mode === 'visual' ? visualChanged || visualBaseDirty : draft !== savedText)
+  const edited = savedText !== null && (mode === 'visual' ? visualChanged || visualBaseDirty : draft !== savedText)
+  const gone = file.status === 'text' && file.gone
+  // A gone file's text is kept in the session; it is unsaved only until it gets there.
+  const [orphanPending, setOrphanPending] = useState(false)
+  const dirty = gone ? orphanPending : edited
 
   const applyDisk = useCallback(
     (text: string, mtimeMs: number, realPath: string | null) => {
-      setFile({ status: 'text', savedText: text, mtimeMs, realPath })
+      setFile({ status: 'text', savedText: text, mtimeMs, realPath, gone: false })
       setDraft(text)
       setVisualChanged(false)
       setVisualBaseDirty(false)
@@ -79,6 +89,7 @@ export function TabBody(props: Props): React.JSX.Element {
 
   const fetchFile = useCallback(async () => {
     const content = await window.discotech.readFile(project, path)
+    if (content.kind === 'missing') return { status: 'missing' } as const
     if (content.kind === 'binary') return { status: 'binary', size: content.size } as const
     if (content.kind === 'too-large') return { status: 'too-large', size: content.size, limit: content.limit } as const
     return { status: 'text', text: content.text, mtimeMs: content.mtimeMs, realPath: content.realPath } as const
@@ -88,13 +99,19 @@ export function TabBody(props: Props): React.JSX.Element {
     try {
       const result = await fetchFile()
       if (result.status === 'text') applyDisk(result.text, result.mtimeMs, result.realPath)
-      else setFile(result)
+      else if (result.status !== 'missing') setFile(result)
+      else if (orphanText.current === null) setFile({ status: 'deleted' })
+      else {
+        setFile({ status: 'text', savedText: orphanText.current, mtimeMs: 0, realPath: null, gone: true })
+        setDraft(orphanText.current)
+      }
       setNotice(null)
     } catch (e) {
       setFile({ status: 'error', message: errorText(e) })
     }
   }, [fetchFile, applyDisk])
 
+  const orphanText = useRef(props.orphanText)
   // Load once; later reloads come from disk events or explicit actions.
   const loadedOnce = useRef(false)
   useEffect(() => {
@@ -104,25 +121,38 @@ export function TabBody(props: Props): React.JSX.Element {
   }, [loadFromDisk])
 
   useEffect(() => props.onDirtyChange(path, dirty), [dirty, path, props.onDirtyChange])
-  useEffect(() => props.onDeletedChange(path, file.status === 'deleted'), [file.status, path, props.onDeletedChange])
+  useEffect(() => props.onDeletedChange(path, file.status === 'deleted' || gone), [file.status, gone, path, props.onDeletedChange])
 
   // Disk changes: an unchanged tab follows the disk; a tab with edits warns instead.
   // Text this tab wrote to disk: the watcher reports our own save like any other change.
   const lastWritten = useRef<string | null>(null)
-  const stateRef = useRef({ file, dirty })
-  stateRef.current = { file, dirty }
+  const stateRef = useRef({ file, edited })
+  stateRef.current = { file, edited }
   const syncWithDisk = useCallback(async () => {
-    const { file: current, dirty: hasEdits } = stateRef.current
+    const { file: current, edited: hasEdits } = stateRef.current
     try {
       const result = await fetchFile()
+      if (result.status === 'missing') {
+        // A text tab keeps its text; other views have nothing to keep.
+        if (current.status !== 'text') setFile({ status: 'deleted' })
+        else if (!current.gone) setFile({ ...current, gone: true })
+        return
+      }
       if (result.status !== 'text') return setFile(result)
       if (current.status === 'text' && result.text === current.savedText) {
-        if (result.mtimeMs !== current.mtimeMs) setFile({ ...current, mtimeMs: result.mtimeMs })
+        if (result.mtimeMs !== current.mtimeMs || current.gone) setFile({ ...current, mtimeMs: result.mtimeMs, gone: false })
       } else if (result.text === lastWritten.current) {
         // Our save is still being recorded; its handler sets the new state.
-      } else if (!hasEdits) {
+      } else if (!hasEdits && !(current.status === 'text' && current.gone)) {
         applyDisk(result.text, result.mtimeMs, result.realPath)
       } else {
+        // A different file back at a gone tab's path: the tab keeps its text and mtime, so the
+        // user chooses, and saving asks before overwriting the file.
+        if (current.status === 'text' && current.gone) {
+          // The tab's text now differs from the file: it counts as unsaved edits.
+          setFile({ ...current, savedText: result.text, gone: false })
+          setVisualBaseDirty(true)
+        }
         setNotice({ kind: 'disk-changed' })
       }
     } catch (e) {
@@ -133,10 +163,9 @@ export function TabBody(props: Props): React.JSX.Element {
 
   useEffect(() => {
     return window.discotech.onFsEvent((event) => {
-      if (event.projectId !== project.id || event.path !== path) return
-      if (event.type === 'delete' && !stateRef.current.dirty) setFile({ status: 'deleted' })
-      else if (event.type === 'delete') setNotice({ kind: 'disk-changed' })
-      else void syncWithDisk()
+      if (event.projectId !== project.id) return
+      // A folder above the file moved or deleted reports only the folder.
+      if (event.path === path || (event.isDir && path.startsWith(event.path + '/'))) void syncWithDisk()
     })
   }, [project, path, syncWithDisk])
 
@@ -149,8 +178,36 @@ export function TabBody(props: Props): React.JSX.Element {
 
   const currentSource = (): string | null => (mode === 'visual' ? markdownRef.current!.source() : draft)
 
+  // A gone file's text goes to the session, so the tab survives a restart.
+  const currentText = useRef<() => string>(() => draft)
+  currentText.current = () =>
+    mode === 'visual' ? (markdownRef.current?.source() ?? markdownRef.current?.canonicalSource() ?? draft) : draft
+  const orphanTimer = useRef<number | null>(null)
+  const { onOrphanTextChange } = props
+  const reportOrphan = useCallback(() => {
+    if (orphanTimer.current !== null) window.clearTimeout(orphanTimer.current)
+    setOrphanPending(true)
+    orphanTimer.current = window.setTimeout(() => {
+      orphanTimer.current = null
+      const current = stateRef.current.file
+      onOrphanTextChange(path, current.status === 'text' && current.gone ? currentText.current() : null)
+      setOrphanPending(false)
+    }, ORPHAN_SAVE_DELAY_MS)
+  }, [path, onOrphanTextChange])
+  useEffect(() => reportOrphan(), [gone, draft, reportOrphan])
+
   const save = async (overwrite: boolean): Promise<void> => {
     if (file.status !== 'text' || saving) return
+    if (
+      file.gone &&
+      !(await confirmDialog({
+        title: `Создать «${baseName(path)}» заново?`,
+        description: `Файла больше нет на прежнем месте. Сохранение создаст его по пути ${relativeTo(project.linuxPath, path)}, вместе с недостающими папками.`,
+        confirmLabel: 'Создать'
+      }))
+    ) {
+      return
+    }
     const source = currentSource()
     if (source === null) {
       toast.error(`«${baseName(path)}» не сохранён`, {
@@ -162,12 +219,16 @@ export function TabBody(props: Props): React.JSX.Element {
     setSaving(true)
     lastWritten.current = source
     try {
-      const result = await window.discotech.writeFile(project, path, source, overwrite ? null : file.mtimeMs)
+      const result = file.gone
+        ? await window.discotech.createFile(project, path, source)
+        : await window.discotech.writeFile(project, path, source, overwrite ? null : file.mtimeMs)
       if (result.status === 'conflict') {
+        // Someone put a file back at this path: saving over it asks first.
+        if (file.gone) setFile({ ...file, gone: false })
         setNotice({ kind: 'save-conflict' })
         return
       }
-      setFile({ ...file, savedText: source, mtimeMs: result.mtimeMs })
+      setFile({ ...file, savedText: source, mtimeMs: result.mtimeMs, gone: false })
       setDraft(source)
       if (mode === 'visual') {
         markdownRef.current!.markSaved(source)
@@ -222,6 +283,7 @@ export function TabBody(props: Props): React.JSX.Element {
       dirtyTimer.current = null
       setVisualChanged(markdownRef.current?.changed() ?? false)
     }, DIRTY_CHECK_DELAY_MS)
+    if (gone) reportOrphan()
   }
 
   useEffect(() => {
@@ -323,7 +385,7 @@ export function TabBody(props: Props): React.JSX.Element {
           )}
         </span>
         {saving && <span className="breadcrumb-muted">Сохранение…</span>}
-        {dirty && !saving && <span className="breadcrumb-muted">не сохранено · Ctrl+S</span>}
+        {(edited || gone) && !saving && <span className="breadcrumb-muted">не сохранено · Ctrl+S</span>}
         {isMarkdown && file.status === 'text' && (
           <div className="mode-toggle">
             <button className={`icon-button${mode === 'source' ? ' active' : ''}`} title="Исходник" onClick={() => switchMode('source')}>
@@ -345,6 +407,14 @@ export function TabBody(props: Props): React.JSX.Element {
           </div>
         )}
       </div>
+      {gone && (
+        <div className="banner banner-warn">
+          <span>
+            Файла больше нет на этом месте: его удалили или перенесли. Здесь последний текст, который был открыт; сохранение
+            (Ctrl+S) создаст файл заново.
+          </span>
+        </div>
+      )}
       {renderNotice()}
       <div className="editor-body">{renderContent()}</div>
     </div>

@@ -1,4 +1,4 @@
-import { open, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, stat, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import type { DirEntry, FileContent, Project, TransferMode, TransferResult, WriteResult } from '../shared/api'
@@ -96,6 +96,9 @@ export async function readFileContent(project: Project, linuxPath: string): Prom
   try {
     return await readUnc(toUnc(project.distro, linuxPath), null)
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !(await pathExists(project, linuxPath))) {
+      return { kind: 'missing', realPath: null }
+    }
     if (!isLinkFailure(error)) throw error
     // Link targets may lie outside the project: the link itself is inside it.
     const realPath = await resolveRealPath(project, linuxPath, error)
@@ -128,6 +131,19 @@ export async function writeFileContent(
   }
   // In-place write keeps the file's inode, owner and permissions.
   await writeFile(target, text, 'utf8')
+  return { status: 'saved', mtimeMs: (await stat(target)).mtimeMs }
+}
+
+export async function createFileContent(project: Project, linuxPath: string, text: string): Promise<WriteResult> {
+  assertInsideProject(project, linuxPath)
+  const target = toUnc(project.distro, linuxPath)
+  await mkdir(path.win32.dirname(target), { recursive: true })
+  try {
+    await writeFile(target, text, { encoding: 'utf8', flag: 'wx' })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    return { status: 'conflict', diskMtimeMs: (await stat(target)).mtimeMs }
+  }
   return { status: 'saved', mtimeMs: (await stat(target)).mtimeMs }
 }
 

@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'e
 import path from 'node:path'
 import type { Project, SessionState, TransferMode } from '../shared/api'
 import { loadSession, saveSession } from './session'
-import { deletePath, listDir, readFileContent, transferPath, writeFileContent } from './files'
+import { createFileContent, deletePath, listDir, readFileContent, transferPath, writeFileContent } from './files'
 import { handlePreviewScheme, PREVIEW_SCHEME, registerPreviewScheme, setPreviewDraft } from './preview'
 import { addProject, listProjects, removeProject } from './projects'
 import { searchContent, searchNames } from './search'
@@ -106,6 +106,9 @@ function registerIpc(): void {
   ipcMain.handle('fs:read', (_e, project: Project, linuxPath: string) => readFileContent(project, linuxPath))
   ipcMain.handle('fs:write', (_e, project: Project, linuxPath: string, text: string, expectedMtimeMs: number | null) =>
     writeFileContent(project, linuxPath, text, expectedMtimeMs)
+  )
+  ipcMain.handle('fs:create', (_e, project: Project, linuxPath: string, text: string) =>
+    createFileContent(project, linuxPath, text)
   )
   ipcMain.handle('fs:transfer', (_e, project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean) =>
     transferPath(project, from, toDir, mode, overwrite)

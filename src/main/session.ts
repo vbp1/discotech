@@ -13,7 +13,7 @@ function sessionPath(): string {
 function isTabList(value: unknown): boolean {
   return (
     Array.isArray(value) &&
-    value.every((t) => typeof t === 'object' && t !== null && typeof t.path === 'string' && typeof t.pinned === 'boolean')
+    value.every((t) => typeof t === 'object' && t !== null && typeof t.path === 'string' && typeof t.pinned === 'boolean' && (t.orphanText === undefined || typeof t.orphanText === 'string'))
   )
 }
 
