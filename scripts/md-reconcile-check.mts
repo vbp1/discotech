@@ -9,6 +9,7 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'ge
 }
 const { Editor } = await import('@tiptap/core')
 const { markdownExtensions, makeBaseline, sourceFromEdits, rebaseline, roundTrip } = await import('../src/renderer/src/markdown/document')
+const { markdownOf } = await import('../src/renderer/src/markdown/trailingParagraph')
 
 const MARK = 'ПРАВКА'
 let ok = 0
@@ -17,7 +18,7 @@ for (const file of process.argv.slice(2)) {
   const editor = new Editor({ element: null, extensions: markdownExtensions() })
   const baseline = makeBaseline(source, (body) => {
     editor.commands.setContent(body, { contentType: 'markdown', emitUpdate: false })
-    return editor.getMarkdown()
+    return markdownOf(editor)
   })
   const unchanged = sourceFromEdits(baseline, editor)
   // Insert a word at the end of the paragraph closest to the middle of the document.

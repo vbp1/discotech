@@ -6,6 +6,7 @@ import { extractAbsorbedBlankLines } from '@tiptap/markdown'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { diffArrays, diffLines } from 'diff'
 import { reconcileMarkdown } from './reconcile'
+import { serializationDocument } from './trailingParagraph'
 
 type SourceBlock = { node: ProseMirrorNode; source: string; separator: string }
 type SourceDocument = { leading: string; blocks: SourceBlock[] }
@@ -79,7 +80,7 @@ export function reconcileByBlocks(
   try {
     const baseline = readSourceDocument(editor, originalSource)
     if (!baseline) return null
-    const document = editor.state.doc
+    const document = serializationDocument(editor)
     const current = readSourceDocument(editor, edited, document)
     if (!current) return null
     const changes = diffArrays(baseline.blocks, current.blocks, {

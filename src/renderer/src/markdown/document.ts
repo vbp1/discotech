@@ -6,10 +6,14 @@ import StarterKit from '@tiptap/starter-kit'
 import { splitFrontMatter } from './frontMatter'
 import { reconcileByBlocks } from './blockSource'
 import { reconcileMarkdown } from './reconcile'
+import { SoftBreakJoin } from './softBreakJoin'
+import { markdownOf, TrailingParagraph } from './trailingParagraph'
 
 export function markdownExtensions(): AnyExtension[] {
   return [
-    StarterKit.configure({ link: { openOnClick: false } }),
+    StarterKit.configure({ link: { openOnClick: false }, trailingNode: false }),
+    TrailingParagraph,
+    SoftBreakJoin,
     TableKit,
     TaskList,
     TaskItem.configure({ nested: true }),
@@ -24,7 +28,7 @@ export function roundTrip(markdown: string): string | null {
   roundTripEditor ??= new Editor({ element: null, extensions: markdownExtensions() })
   try {
     roundTripEditor.commands.setContent(markdown, { contentType: 'markdown', emitUpdate: false })
-    return roundTripEditor.getMarkdown()
+    return markdownOf(roundTripEditor)
   } catch {
     // A parse failure means the proof failed; the caller refuses to save.
     return null
@@ -47,7 +51,7 @@ export function makeBaseline(source: string, canonicalOf: (body: string) => stri
 /** The baseline after saving `source`, which parses to the editor's current document. */
 export function rebaseline(source: string, editor: Editor): MarkdownBaseline {
   const { frontMatter, body } = splitFrontMatter(source)
-  return { frontMatter, body, canonical: editor.getMarkdown() }
+  return { frontMatter, body, canonical: markdownOf(editor) }
 }
 
 /**
@@ -56,7 +60,7 @@ export function rebaseline(source: string, editor: Editor): MarkdownBaseline {
  * only the changed top-level blocks (a paragraph, a list, a table) are written anew.
  */
 export function sourceFromEdits(baseline: MarkdownBaseline, editor: Editor): string | null {
-  const edited = editor.getMarkdown()
+  const edited = markdownOf(editor)
   const body =
     reconcileMarkdown({ originalSource: baseline.body, baseCanonical: baseline.canonical, edited, roundTrip }) ??
     reconcileByBlocks(editor, baseline.body, edited, roundTrip)

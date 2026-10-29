@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { makeBaseline, markdownExtensions, rebaseline, sourceFromEdits, type MarkdownBaseline } from './markdown/document'
+import { markdownOf } from './markdown/trailingParagraph'
 
 export type MarkdownEditorHandle = {
   /** Loads file text; the editor shows its body and remembers it as the baseline. */
@@ -57,7 +58,7 @@ export function MarkdownEditor({ ref, initialSource, fontSize, onChange }: Props
   const load = (source: string): void => {
     baseline.current = makeBaseline(source, (body) => {
       editor.commands.setContent(body, { contentType: 'markdown', emitUpdate: false })
-      return editor.getMarkdown()
+      return markdownOf(editor)
     })
     setFrontMatter(baseline.current.frontMatter)
   }
@@ -81,10 +82,10 @@ export function MarkdownEditor({ ref, initialSource, fontSize, onChange }: Props
         return sourceFromEdits(baseline.current, editor)
       },
       canonicalSource() {
-        return (baseline.current?.frontMatter ?? '') + editor.getMarkdown()
+        return (baseline.current?.frontMatter ?? '') + markdownOf(editor)
       },
       changed() {
-        return baseline.current !== null && editor.getMarkdown() !== baseline.current.canonical
+        return baseline.current !== null && markdownOf(editor) !== baseline.current.canonical
       }
     }),
     [editor]
