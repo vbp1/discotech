@@ -275,10 +275,32 @@ export function App(): React.JSX.Element {
     }
   }
 
-  // The main process asks before closing the window while edits are unsaved.
+  // Closing the window while edits are unsaved is cancelled and asked about here.
+  const askingClose = useRef(false)
+  const dirtyPathsRef = useRef(dirtyPaths)
+  dirtyPathsRef.current = dirtyPaths
   useEffect(() => {
     if (totalDirty === 0) return
-    const onBeforeUnload = (e: BeforeUnloadEvent): void => e.preventDefault()
+    const askClose = async (): Promise<void> => {
+      if (askingClose.current) return
+      askingClose.current = true
+      const names = Object.values(dirtyPathsRef.current).flatMap((paths) => [...paths].map((p) => `«${baseName(p)}»`))
+      try {
+        const confirmed = await confirmDialog({
+          title: 'Закрыть discotech?',
+          description: `Несохранённые правки: ${names.join(', ')}. Если закрыть окно, они пропадут.`,
+          confirmLabel: 'Закрыть без сохранения',
+          destructive: true
+        })
+        if (confirmed) await window.discotech.closeWindowDiscarding()
+      } finally {
+        askingClose.current = false
+      }
+    }
+    const onBeforeUnload = (e: BeforeUnloadEvent): void => {
+      e.preventDefault()
+      askClose().catch((err) => toast.error('Не удалось закрыть окно', { description: errorText(err) }))
+    }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [totalDirty])

@@ -58,6 +58,8 @@ export type DiscotechApi = {
   readFile(project: Project, linuxPath: string): Promise<FileContent>
   /** Writes text; expectedMtimeMs null skips the on-disk change check (explicit overwrite). */
   writeFile(project: Project, linuxPath: string, text: string, expectedMtimeMs: number | null): Promise<WriteResult>
+  /** Closes the window although tabs have unsaved edits; the user has confirmed it. */
+  closeWindowDiscarding(): Promise<void>
   /** Creates a file that is not on disk, with any missing folders; a conflict when something is already there. */
   createFile(project: Project, linuxPath: string, text: string): Promise<WriteResult>
   /**

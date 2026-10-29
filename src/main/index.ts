@@ -13,6 +13,8 @@ import { parseUnc } from './wsl'
 const DEFAULT_PICK_PATH = '\\\\wsl.localhost\\'
 
 let mainWindow: BrowserWindow | null = null
+/** Set once the user chose in the app to close the window and drop unsaved edits. */
+let discardUnsaved = false
 
 registerPreviewScheme()
 
@@ -70,18 +72,12 @@ function createWindow(): void {
     event.preventDefault()
     openOutside(event.url)
   })
-  // The renderer cancels unload while edits are unsaved; ask the user here.
+  // The renderer cancels unload while edits are unsaved and asks in its own dialog; the window
+  // closes once the user confirms there.
   mainWindow.webContents.on('will-prevent-unload', (event) => {
-    const choice = dialog.showMessageBoxSync(mainWindow!, {
-      type: 'warning',
-      buttons: ['Закрыть без сохранения', 'Остаться'],
-      title: 'discotech',
-      message: 'Есть несохранённые правки.',
-      detail: 'Если закрыть окно, они пропадут.',
-      defaultId: 1,
-      cancelId: 1
-    })
-    if (choice === 0) event.preventDefault()
+    if (discardUnsaved) return event.preventDefault()
+    if (mainWindow!.isMinimized()) mainWindow!.restore()
+    mainWindow!.focus()
   })
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -90,6 +86,10 @@ function createWindow(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('window:close-discarding', () => {
+    discardUnsaved = true
+    mainWindow?.close()
+  })
   ipcMain.handle('projects:list', () => listProjects())
   ipcMain.handle('projects:add', async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {

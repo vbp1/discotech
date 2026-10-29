@@ -16,6 +16,7 @@ const api: DiscotechApi = {
   writeFile: (project, linuxPath, text, expectedMtimeMs) =>
     ipcRenderer.invoke('fs:write', project, linuxPath, text, expectedMtimeMs),
   createFile: (project, linuxPath, text) => ipcRenderer.invoke('fs:create', project, linuxPath, text),
+  closeWindowDiscarding: () => ipcRenderer.invoke('window:close-discarding'),
   transferPath: (project, from, toDir, mode, overwrite) =>
     ipcRenderer.invoke('fs:transfer', project, from, toDir, mode, overwrite),
   getSession: () => ipcRenderer.invoke('session:get'),
