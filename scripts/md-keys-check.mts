@@ -9,6 +9,7 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'ge
 }
 const { Editor } = await import('@tiptap/core')
 const { TextSelection } = await import('@tiptap/pm/state')
+const { DOMParser } = await import('@tiptap/pm/model')
 const { markdownExtensions, makeBaseline, sourceFromEdits } = await import('../src/renderer/src/markdown/document')
 const { markdownOf } = await import('../src/renderer/src/markdown/trailingParagraph')
 const { deleteAdjacentEmptyParagraph } = await import('../src/renderer/src/markdown/softBreakJoin')
@@ -76,6 +77,16 @@ const cursor = (editor: any, index: number, atEnd = false) => {
   const end = editor.state.doc.content.size - 1
   editor.chain().insertContentAt(end, 'tail').run()
   check('typing in trailing paragraph saves it', sourceFromEdits(baseline, editor), '- Za\n- b\n\ntail\n')
+  editor.destroy()
+}
+{
+  // What typing does: the edited paragraph is read back from the page.
+  const { editor } = open('first\nsecond\n')
+  const paragraph = editor.view.dom.querySelector('p')!
+  // The view's own choice: its domParser prop, else the schema's parser.
+  const parser = editor.view.someProp('domParser') ?? DOMParser.fromSchema(editor.schema)
+  const read = parser.parse(paragraph, { topNode: editor.state.doc.child(0), topOpen: true, preserveWhitespace: true })
+  check('re-reading typed text keeps soft breaks', read.toJSON(), editor.state.doc.child(0).toJSON())
   editor.destroy()
 }
 console.log(failed ? `${failed} failed` : 'all passed')

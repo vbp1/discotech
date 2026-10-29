@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { splitFrontMatter } from './frontMatter'
 import { reconcileByBlocks } from './blockSource'
 import { reconcileMarkdown } from './reconcile'
+import { SoftBreakInput } from './softBreakInput'
 import { SoftBreakJoin } from './softBreakJoin'
 import { markdownOf, TrailingParagraph } from './trailingParagraph'
 
@@ -14,6 +15,7 @@ export function markdownExtensions(): AnyExtension[] {
     StarterKit.configure({ link: { openOnClick: false }, trailingNode: false }),
     TrailingParagraph,
     SoftBreakJoin,
+    SoftBreakInput,
     TableKit,
     TaskList,
     TaskItem.configure({ nested: true }),
