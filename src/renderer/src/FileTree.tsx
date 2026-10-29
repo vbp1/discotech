@@ -1,10 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, Scissors, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, FolderTree, Route, Scissors, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { DirEntry, Project, TransferMode } from '../../shared/api'
 import { errorText } from './errors'
-import { parentDir } from './paths'
+import { parentDir, relativeTo } from './paths'
 
 const RELOAD_DELAY_MS = 150
 // A dragged item held over a closed folder this long opens it, to drop into a subfolder.
@@ -128,10 +128,19 @@ export function FileTree(props: Props): React.JSX.Element {
     virtualizer.measure()
   }, [rowHeight, virtualizer])
 
+  // Scroll to the active file once when it becomes active, as soon as its row is listed; later
+  // changes of the list (a folder opened above it) leave the scroll position alone.
+  const pendingReveal = useRef<string | null>(null)
   useEffect(() => {
-    if (!activePath) return
-    const index = rows.findIndex((r) => r.kind === 'entry' && r.entry.path === activePath)
-    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'auto' })
+    pendingReveal.current = activePath
+  }, [activePath])
+  useEffect(() => {
+    const target = pendingReveal.current
+    if (!target) return
+    const index = rows.findIndex((r) => r.kind === 'entry' && r.entry.path === target)
+    if (index < 0) return
+    pendingReveal.current = null
+    virtualizer.scrollToIndex(index, { align: 'auto' })
   }, [activePath, rows, virtualizer])
 
   // Drag and drop: rows move into the folder under the pointer, files into their own folder,
@@ -257,6 +266,12 @@ export function FileTree(props: Props): React.JSX.Element {
     }
     const to = await transfer(clipboard.path, pasteDirFor(path), clipboard.mode)
     if (to !== null && clipboard.mode === 'move') onClipboardChange(null)
+  }
+  const copyPathText = (text: string): void => {
+    navigator.clipboard.writeText(text).then(
+      () => toast.success('Путь скопирован', { description: text }),
+      (error: unknown) => toast.error(`Не удалось скопировать путь: ${error instanceof Error ? error.message : String(error)}`)
+    )
   }
   const remove = async (path: string | null): Promise<void> => {
     if (!path || !(await onDeletePath(path))) return
@@ -443,6 +458,11 @@ export function FileTree(props: Props): React.JSX.Element {
           {menuItem('Копировать', 'Ctrl+C', <Copy size={14} />, menu.path === null, () => copy(menu.path, 'copy'))}
           {menuItem('Вырезать', 'Ctrl+X', <Scissors size={14} />, menu.path === null, () => copy(menu.path, 'move'))}
           {menuItem('Вставить', 'Ctrl+V', <ClipboardPaste size={14} />, !ownClipboard, () => void paste(menu.path))}
+          <div className="menu-separator" />
+          {menuItem('Копировать путь', '', <Route size={14} />, menu.path === null, () => copyPathText(menu.path!))}
+          {menuItem('Копировать путь от папки проекта', '', <FolderTree size={14} />, menu.path === null, () =>
+            copyPathText(relativeTo(project.linuxPath, menu.path!))
+          )}
           <div className="menu-separator" />
           {menuItem('Удалить', 'Delete', <Trash2 size={14} />, menu.path === null, () => void remove(menu.path))}
         </div>
