@@ -734,6 +734,12 @@ body.resizing {
 }
 
 /* Markdown editor */
+/* Line breaks inside a markdown paragraph are spaces; the editor keeps them in the text so the
+   file saves unchanged, and this collapses them on screen (as Orca does). Hard breaks are <br>. */
+.md-content p {
+  white-space: normal;
+}
+
 .md-editor {
   flex: 1;
   min-height: 0;
