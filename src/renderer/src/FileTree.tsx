@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { DirEntry, Project, TransferMode } from '../../shared/api'
 import { errorText } from './errors'
-import { parentDir, relativeTo } from './paths'
+import { parentDir, relativeTo, rootPrefix } from './paths'
 
 const RELOAD_DELAY_MS = 150
 // A dragged item held over a closed folder this long opens it, to drop into a subfolder.
@@ -56,7 +56,7 @@ export function FileTree(props: Props): React.JSX.Element {
   )
 
   useEffect(() => {
-    void loadDir(project.linuxPath)
+    void loadDir(project.rootPath)
   }, [project, loadDir])
 
   // Reload a listed directory when something inside it changes on disk.
@@ -85,9 +85,9 @@ export function FileTree(props: Props): React.JSX.Element {
 
   // Expand the folders leading to the file opened from search or tabs.
   useEffect(() => {
-    if (!activePath || !activePath.startsWith(project.linuxPath + '/')) return
+    if (!activePath || !activePath.startsWith(rootPrefix(project.rootPath))) return
     const ancestors: string[] = []
-    for (let dir = parentDir(activePath); dir.length > project.linuxPath.length; dir = parentDir(dir)) {
+    for (let dir = parentDir(activePath); dir.length > project.rootPath.length; dir = parentDir(dir)) {
       ancestors.unshift(dir)
     }
     setExpanded((prev) => {
@@ -111,7 +111,7 @@ export function FileTree(props: Props): React.JSX.Element {
         if (entry.isDir && expanded.has(entry.path)) walk(entry.path, depth + 1)
       }
     }
-    walk(project.linuxPath, 0)
+    walk(project.rootPath, 0)
     return out
   }, [dirs, expanded, project])
 
@@ -246,7 +246,7 @@ export function FileTree(props: Props): React.JSX.Element {
   const ownClipboard = clipboard?.projectId === project.id ? clipboard : null
 
   const pasteDirFor = (path: string | null): string => {
-    if (path === null) return project.linuxPath
+    if (path === null) return project.rootPath
     const entry = findEntry(path)
     return entry?.isDir ? path : parentDir(path)
   }
@@ -362,7 +362,7 @@ export function FileTree(props: Props): React.JSX.Element {
         {toolbarButton('Удалить (Delete)', <Trash2 size={15} />, !selected, () => void remove(selected))}
       </div>
       <div
-        className={`tree${highlightDir === project.linuxPath ? ' tree-drop' : ''}`}
+        className={`tree${highlightDir === project.rootPath ? ' tree-drop' : ''}`}
         ref={scrollRef}
         style={{ fontSize }}
         tabIndex={0}
@@ -374,8 +374,8 @@ export function FileTree(props: Props): React.JSX.Element {
           e.preventDefault()
           setMenu({ x: e.clientX, y: e.clientY, path: null })
         }}
-        onDragOver={(e) => dragOverTarget(e, project.linuxPath, null)}
-        onDrop={(e) => void dropOn(e, project.linuxPath)}
+        onDragOver={(e) => dragOverTarget(e, project.rootPath, null)}
+        onDrop={(e) => void dropOn(e, project.rootPath)}
         onDragLeave={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
             clearHold()
@@ -384,7 +384,7 @@ export function FileTree(props: Props): React.JSX.Element {
           }
         }}
       >
-        {!dirs.has(project.linuxPath) && <div className="tree-note">Загрузка…</div>}
+        {!dirs.has(project.rootPath) && <div className="tree-note">Загрузка…</div>}
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((item) => {
             const row = rows[item.index]
@@ -461,7 +461,7 @@ export function FileTree(props: Props): React.JSX.Element {
           <div className="menu-separator" />
           {menuItem('Копировать путь', '', <Route size={14} />, menu.path === null, () => copyPathText(menu.path!))}
           {menuItem('Копировать путь от папки проекта', '', <FolderTree size={14} />, menu.path === null, () =>
-            copyPathText(relativeTo(project.linuxPath, menu.path!))
+            copyPathText(relativeTo(project.rootPath, menu.path!))
           )}
           <div className="menu-separator" />
           {menuItem('Удалить', 'Delete', <Trash2 size={14} />, menu.path === null, () => void remove(menu.path))}

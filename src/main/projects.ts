@@ -3,8 +3,34 @@ import { randomUUID } from 'node:crypto'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import type { Project } from '../shared/api'
+import { fromWslMount } from './wsl'
 
 type Settings = { projects: Project[]; searchSkipDirs?: string[] }
+
+type StoredProject = { id: string; name: string; distro: string | null; rootPath: string }
+
+/** Reads one stored project; accepts the previous field name linuxPath and /mnt mapping. */
+function parseProject(value: unknown, index: number): Project {
+  const where = `Settings file ${settingsPath()}: projects[${index}]`
+  if (typeof value !== 'object' || value === null) throw new Error(`${where} is not an object. Fix or delete the file.`)
+  const record = value as Record<string, unknown>
+  if (typeof record.id !== 'string' || typeof record.name !== 'string') {
+    throw new Error(`${where} needs string "id" and "name". Fix or delete the file.`)
+  }
+  const distro = record.distro ?? null
+  if (distro !== null && typeof distro !== 'string') {
+    throw new Error(`${where}: "distro" must be a distro name or null.`)
+  }
+  const root = record.rootPath ?? record.linuxPath
+  if (typeof root !== 'string' || root === '') {
+    throw new Error(`${where} needs a string "rootPath". Fix or delete the file.`)
+  }
+  // Folders once mapped into a distro's /mnt are Windows folders the app opens natively.
+  if (distro !== null && /^\/mnt\/[a-zA-Z]\//.test(root)) {
+    return { id: record.id, name: record.name, distro: null, rootPath: fromWslMount(root) }
+  }
+  return { id: record.id, name: record.name, distro, rootPath: root }
+}
 
 /**
  * Folders search never enters: git data, dependencies, working copies, build caches, and the
@@ -44,17 +70,18 @@ async function loadSettings(): Promise<Settings> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { projects: [] }
     throw error
   }
-  const parsed = JSON.parse(raw) as Partial<Settings>
+  const parsed = JSON.parse(raw) as { projects?: unknown[]; searchSkipDirs?: unknown }
   if (!Array.isArray(parsed.projects)) {
     throw new Error(`Settings file ${settingsPath()} has no "projects" array. Fix or delete the file.`)
   }
+  const projects = parsed.projects.map(parseProject)
   const skip = parsed.searchSkipDirs
   if (skip !== undefined && (!Array.isArray(skip) || skip.some((d) => typeof d !== 'string' || d.trim() === ''))) {
     throw new Error(
       `Settings file ${settingsPath()}: "searchSkipDirs" must be a list of folder names, got ${JSON.stringify(skip)}. Fix or remove the field.`
     )
   }
-  return { projects: parsed.projects, ...(skip ? { searchSkipDirs: skip } : {}) }
+  return { projects, ...(skip ? { searchSkipDirs: skip } : {}) }
 }
 
 export async function searchSkipDirs(): Promise<string[]> {
@@ -63,22 +90,23 @@ export async function searchSkipDirs(): Promise<string[]> {
 
 async function saveSettings(settings: Settings): Promise<void> {
   await mkdir(path.dirname(settingsPath()), { recursive: true })
-  await writeFile(settingsPath(), JSON.stringify(settings, null, 2), 'utf8')
+  const stored: Settings & { projects: StoredProject[] } = { ...settings, projects: settings.projects }
+  await writeFile(settingsPath(), JSON.stringify(stored, null, 2), 'utf8')
 }
 
 export async function listProjects(): Promise<Project[]> {
   return (await loadSettings()).projects
 }
 
-export async function addProject(distro: string, linuxPath: string): Promise<Project> {
+export async function addProject(distro: string | null, rootPath: string): Promise<Project> {
   const settings = await loadSettings()
-  const existing = settings.projects.find((p) => p.distro === distro && p.linuxPath === linuxPath)
+  const existing = settings.projects.find((p) => p.distro === distro && p.rootPath === rootPath)
   if (existing) return existing
   const project: Project = {
     id: randomUUID(),
-    name: path.posix.basename(linuxPath) || linuxPath,
+    name: path.posix.basename(rootPath) || rootPath,
     distro,
-    linuxPath
+    rootPath
   }
   settings.projects.push(project)
   await saveSettings(settings)

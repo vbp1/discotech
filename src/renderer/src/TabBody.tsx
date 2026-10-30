@@ -202,7 +202,7 @@ export function TabBody(props: Props): React.JSX.Element {
       file.gone &&
       !(await confirmDialog({
         title: `Создать «${baseName(path)}» заново?`,
-        description: `Файла больше нет на прежнем месте. Сохранение создаст его по пути ${relativeTo(project.linuxPath, path)}, вместе с недостающими папками.`,
+        description: `Файла больше нет на прежнем месте. Сохранение создаст его по пути ${relativeTo(project.rootPath, path)}, вместе с недостающими папками.`,
         confirmLabel: 'Создать'
       }))
     ) {
@@ -379,9 +379,9 @@ export function TabBody(props: Props): React.JSX.Element {
     <div className={active ? 'tab-body' : 'tab-body hidden'}>
       <div className="breadcrumb">
         <span className="breadcrumb-path">
-          {relativeTo(project.linuxPath, path)}
+          {relativeTo(project.rootPath, path)}
           {file.status === 'text' && file.realPath && (
-            <span title={file.realPath}> → {relativeTo(project.linuxPath, file.realPath)}</span>
+            <span title={file.realPath}> → {relativeTo(project.rootPath, file.realPath)}</span>
           )}
         </span>
         {saving && <span className="breadcrumb-muted">Сохранение…</span>}

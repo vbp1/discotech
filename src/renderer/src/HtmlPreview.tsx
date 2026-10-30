@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 import { errorText } from './errors'
 
-type Props = { distro: string; path: string; html: string }
+type Props = { distro: string | null; path: string; html: string }
 
-/** URL under which the main process serves project files, so the page's relative links resolve. */
-function viewUrl(distro: string, linuxPath: string, version: number): string {
-  return `wslview://wsl/${encodeURIComponent(distro)}${linuxPath.split('/').map(encodeURIComponent).join('/')}?v=${version}`
+/**
+ * URL under which the main process serves project files, so the page's relative links resolve:
+ * wslview://wsl/<distro>/<path> for distro projects, wslview://<drive>/<path> for Windows folders.
+ */
+function viewUrl(distro: string | null, projectPath: string, version: number): string {
+  const encoded = projectPath.split('/').map(encodeURIComponent).join('/')
+  const base = distro === null ? `wslview://${projectPath.slice(0, 1).toLowerCase()}:${encoded.slice(2)}` : `wslview://wsl/${encodeURIComponent(distro)}${encoded}`
+  return `${base}?v=${version}`
 }
 
 /**

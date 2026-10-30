@@ -8,8 +8,9 @@ and a viewer, plus your Claude and Codex usage limits in the status bar. Styled 
 
 ## Features
 
-- **Projects** — any folders inside your WSL distros (`\\wsl.localhost\...`); the last open project
-  and its tabs come back after a restart.
+- **Projects** — any folders inside your WSL distros (`\\wsl.localhost\...`), and Windows folders,
+  which become projects in the default distro through its `/mnt` mount; the last open project and
+  its tabs come back after a restart.
 - **File tree** — lazy, virtualized, follows symlinks (resolved inside WSL), live updates via
   `inotifywait`. Drag and drop to move, a 1.5 s hover opens a folder; copy, cut, paste and delete
   from the context menu, the toolbar or `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Delete`. A taken name asks

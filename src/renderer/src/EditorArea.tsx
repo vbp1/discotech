@@ -2,7 +2,7 @@ import { FileText, Pin, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import type { Project, SessionTab } from '../../shared/api'
 import { confirmDialog } from './confirm'
-import { baseName } from './paths'
+import { baseName, rootPrefix } from './paths'
 import { TabBody } from './TabBody'
 import { TabStrip } from './TabStrip'
 
@@ -44,7 +44,7 @@ export function EditorArea(props: Props): React.JSX.Element {
   const [deleted, setDeleted] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    if (!openRequest || !openRequest.path.startsWith(project.linuxPath + '/')) return
+    if (!openRequest || !openRequest.path.startsWith(rootPrefix(project.rootPath))) return
     const { path, line } = openRequest
     setTabs((prev) => {
       if (prev.some((t) => t.path === path)) return prev

@@ -8,7 +8,7 @@ import { addProject, listProjects, removeProject } from './projects'
 import { searchContent, searchNames } from './search'
 import { getUsage } from './usage'
 import { stopWatching, watchProject } from './watcher'
-import { parseUnc } from './wsl'
+import { parseUnc, windowsDriveToProjectPath } from './wsl'
 
 const DEFAULT_PICK_PATH = '\\\\wsl.localhost\\'
 
@@ -98,32 +98,37 @@ function registerIpc(): void {
       properties: ['openDirectory']
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const { distro, linuxPath } = parseUnc(result.filePaths[0])
+    const picked = result.filePaths[0]
+    if (/^[a-zA-Z]:[\\/]?/.test(picked)) {
+      // A Windows folder: the app opens it natively, without WSL.
+      return addProject(null, windowsDriveToProjectPath(picked))
+    }
+    const { distro, linuxPath } = parseUnc(picked)
     return addProject(distro, linuxPath)
   })
   ipcMain.handle('projects:remove', (_e, id: string) => removeProject(id))
-  ipcMain.handle('fs:list', (_e, project: Project, linuxPath: string) => listDir(project, linuxPath))
-  ipcMain.handle('fs:read', (_e, project: Project, linuxPath: string) => readFileContent(project, linuxPath))
-  ipcMain.handle('fs:write', (_e, project: Project, linuxPath: string, text: string, expectedMtimeMs: number | null) =>
-    writeFileContent(project, linuxPath, text, expectedMtimeMs)
+  ipcMain.handle('fs:list', (_e, project: Project, projectPath: string) => listDir(project, projectPath))
+  ipcMain.handle('fs:read', (_e, project: Project, projectPath: string) => readFileContent(project, projectPath))
+  ipcMain.handle('fs:write', (_e, project: Project, projectPath: string, text: string, expectedMtimeMs: number | null) =>
+    writeFileContent(project, projectPath, text, expectedMtimeMs)
   )
-  ipcMain.handle('fs:create', (_e, project: Project, linuxPath: string, text: string) =>
-    createFileContent(project, linuxPath, text)
+  ipcMain.handle('fs:create', (_e, project: Project, projectPath: string, text: string) =>
+    createFileContent(project, projectPath, text)
   )
   ipcMain.handle('fs:transfer', (_e, project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean) =>
     transferPath(project, from, toDir, mode, overwrite)
   )
   ipcMain.handle('session:get', () => loadSession())
   ipcMain.handle('session:set', (_e, state: SessionState) => saveSession(state))
-  ipcMain.handle('fs:delete', (_e, project: Project, linuxPath: string) => deletePath(project, linuxPath))
+  ipcMain.handle('fs:delete', (_e, project: Project, projectPath: string) => deletePath(project, projectPath))
   ipcMain.handle('fs:watch', (_e, project: Project) => {
     watchProject(project, {
       onEvent: (event) => mainWindow?.webContents.send('fs:event', event),
       onStatus: (status) => mainWindow?.webContents.send('fs:watch-status', status)
     })
   })
-  ipcMain.handle('preview:draft', (_e, distro: string, linuxPath: string, text: string | null) =>
-    setPreviewDraft(distro, linuxPath, text)
+  ipcMain.handle('preview:draft', (_e, distro: string | null, projectPath: string, text: string | null) =>
+    setPreviewDraft(distro, projectPath, text)
   )
   ipcMain.handle('usage:get', (_e, distro: string) => getUsage(distro))
   ipcMain.handle('search:names', (_e, project: Project, query: string) => searchNames(project, query))

@@ -63,7 +63,7 @@ export function SearchResults({ project, query, mode, fontSize, onOpenFile }: Pr
         ? state.result.paths.map((path) => (
             <div key={path} className="result-row" title={path} onClick={() => onOpenFile(path)}>
               <span className="result-name">{baseName(path)}</span>
-              <span className="result-dir">{relativeTo(project.linuxPath, parentDir(path))}</span>
+              <span className="result-dir">{relativeTo(project.rootPath, parentDir(path))}</span>
             </div>
           ))
         : state.result.matches.map((m) => (
@@ -74,7 +74,7 @@ export function SearchResults({ project, query, mode, fontSize, onOpenFile }: Pr
               onClick={() => onOpenFile(m.path, m.line)}
             >
               <span className="result-dir">
-                {relativeTo(project.linuxPath, m.path)}:{m.line}
+                {relativeTo(project.rootPath, m.path)}:{m.line}
               </span>
               <span className="result-text">{m.text.trim()}</span>
             </div>

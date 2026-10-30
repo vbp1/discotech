@@ -1,10 +1,13 @@
-import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { watch, type FSWatcher } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import type { FsEvent, FsEventType, Project, WatchStatus } from '../shared/api'
-import { spawnInWsl } from './wsl'
+import { osPath, spawnInWsl } from './wsl'
 
-// Windows cannot watch \\wsl.localhost paths (fs.watch fails with EISDIR),
-// so the watcher runs inside the distro and reports inotify events.
+// \\wsl.localhost paths cannot be watched from Windows (fs.watch fails with EISDIR), so distro
+// folders are watched inside the distro and report inotify events. Windows-folder projects are
+// watched natively on their drive path.
 const EXCLUDE = '(^|/)(\\.git|node_modules)(/|$)'
+const EXCLUDED_SEGMENTS = new Set(['.git', 'node_modules'])
 
 const EVENT_TYPES: Record<string, FsEventType> = {
   CREATE: 'create',
@@ -19,11 +22,16 @@ type Listeners = {
   onStatus(status: WatchStatus): void
 }
 
-let current: { projectId: string; child: ChildProcessWithoutNullStreams } | null = null
+let current: { projectId: string; stop(): void } | null = null
 
 export function watchProject(project: Project, listeners: Listeners): void {
   stopWatching()
-  const child = spawnInWsl(project.distro, [
+  if (project.distro === null) watchWindowsFolder(project, listeners)
+  else watchInotify(project, project.distro, listeners)
+}
+
+function watchInotify(project: Project, distro: string, listeners: Listeners): void {
+  const child = spawnInWsl(distro, [
     'inotifywait',
     '-m',
     '-r',
@@ -34,9 +42,12 @@ export function watchProject(project: Project, listeners: Listeners): void {
     EXCLUDE,
     '--format',
     '%e|%w%f',
-    project.linuxPath
+    project.rootPath
   ])
-  current = { projectId: project.id, child }
+  const stop = (): void => {
+    child.kill()
+  }
+  current = { projectId: project.id, stop }
   let stdoutTail = ''
   let stderr = ''
 
@@ -66,7 +77,7 @@ export function watchProject(project: Project, listeners: Listeners): void {
     listeners.onStatus({ projectId: project.id, state: 'failed', message: `wsl.exe failed to start: ${error.message}` })
   })
   child.on('exit', (code, signal) => {
-    if (current?.child !== child) return
+    if (current?.stop !== stop) return
     current = null
     listeners.onStatus({
       projectId: project.id,
@@ -79,9 +90,48 @@ export function watchProject(project: Project, listeners: Listeners): void {
   listeners.onStatus({ projectId: project.id, state: 'running' })
 }
 
+function watchWindowsFolder(project: Project, listeners: Listeners): void {
+  const windowsPath = osPath(project, project.rootPath)
+  let watcher: FSWatcher
+  try {
+    watcher = watch(windowsPath, { recursive: true }, (event, filename) => report(event, filename))
+  } catch (error) {
+    listeners.onStatus({ projectId: project.id, state: 'failed', message: `Watching "${windowsPath}" failed: ${(error as Error).message}` })
+    return
+  }
+  const stop = (): void => {
+    watcher.close()
+  }
+  current = { projectId: project.id, stop }
+  watcher.on('error', (error: Error) => {
+    if (current?.stop !== stop) return
+    current = null
+    stop()
+    listeners.onStatus({ projectId: project.id, state: 'failed', message: `Watching "${windowsPath}" stopped: ${error.message}` })
+  })
+  listeners.onStatus({ projectId: project.id, state: 'running' })
+
+  // Windows reports "rename" for names that appear and vanish alike; the disk tells which.
+  function report(event: string, filename: string | null): void {
+    if (filename === null) return
+    const relative = filename.split(/[\\/]/).filter(Boolean)
+    if (relative.some((part) => EXCLUDED_SEGMENTS.has(part))) return
+    const prefix = project.rootPath.endsWith('/') ? project.rootPath : project.rootPath + '/'
+    const projectPath = prefix + relative.join('/')
+    if (event !== 'rename') {
+      listeners.onEvent({ projectId: project.id, type: 'modify', path: projectPath, isDir: false })
+      return
+    }
+    stat(`${windowsPath}\\${filename}`).then(
+      (info) => listeners.onEvent({ projectId: project.id, type: 'create', path: projectPath, isDir: info.isDirectory() }),
+      () => listeners.onEvent({ projectId: project.id, type: 'delete', path: projectPath, isDir: false })
+    )
+  }
+}
+
 export function stopWatching(): void {
   if (!current) return
-  const { child } = current
+  const { stop } = current
   current = null
-  child.kill()
+  stop()
 }

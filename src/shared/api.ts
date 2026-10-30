@@ -1,11 +1,13 @@
-// Contract between the main process and the renderer. All paths are Linux
-// paths inside a WSL distro; the main process maps them to UNC paths.
+// Contract between the main process and the renderer. Paths use forward slashes: Linux paths
+// for projects inside a WSL distro ("/home/x"), drive paths for Windows-folder projects ("C:/x").
 
 export type Project = {
   id: string
   name: string
-  distro: string
-  linuxPath: string
+  /** null for a Windows folder: the app opens it natively, without going through WSL. */
+  distro: string | null
+  /** The project root: "/home/x" in a distro, "C:/work" on a Windows drive. */
+  rootPath: string
 }
 
 export type DirEntry = {
@@ -54,14 +56,14 @@ export type DiscotechApi = {
   listProjects(): Promise<Project[]>
   addProject(): Promise<Project | null>
   removeProject(id: string): Promise<void>
-  listDir(project: Project, linuxPath: string): Promise<DirEntry[]>
-  readFile(project: Project, linuxPath: string): Promise<FileContent>
+  listDir(project: Project, projectPath: string): Promise<DirEntry[]>
+  readFile(project: Project, projectPath: string): Promise<FileContent>
   /** Writes text; expectedMtimeMs null skips the on-disk change check (explicit overwrite). */
-  writeFile(project: Project, linuxPath: string, text: string, expectedMtimeMs: number | null): Promise<WriteResult>
+  writeFile(project: Project, projectPath: string, text: string, expectedMtimeMs: number | null): Promise<WriteResult>
   /** Closes the window although tabs have unsaved edits; the user has confirmed it. */
   closeWindowDiscarding(): Promise<void>
   /** Creates a file that is not on disk, with any missing folders; a conflict when something is already there. */
-  createFile(project: Project, linuxPath: string, text: string): Promise<WriteResult>
+  createFile(project: Project, projectPath: string, text: string): Promise<WriteResult>
   /**
    * Moves or copies a file or folder into toDir. A taken name comes back as "exists" with nothing
    * changed, unless overwrite: then a file is replaced and a folder merged. A copy into its own
@@ -73,12 +75,12 @@ export type DiscotechApi = {
   /** Replaces the stored session. */
   setSession(state: SessionState): Promise<void>
   /** Deletes a file or folder for good. */
-  deletePath(project: Project, linuxPath: string): Promise<void>
+  deletePath(project: Project, projectPath: string): Promise<void>
   watchProject(project: Project): Promise<void>
   searchNames(project: Project, query: string): Promise<NameSearchResult>
   searchContent(project: Project, query: string): Promise<ContentSearchResult>
   /** Text the HTML preview shows for a file instead of its disk content; null forgets it. */
-  setPreviewDraft(distro: string, linuxPath: string, text: string | null): Promise<void>
+  setPreviewDraft(distro: string | null, projectPath: string, text: string | null): Promise<void>
   /** Reads Claude, Codex and Z.ai logins from the distro's home and asks the services for usage. */
   getUsage(distro: string): Promise<UsageReport>
   onFsEvent(listener: (event: FsEvent) => void): () => void

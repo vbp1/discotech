@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { ContentMatch, ContentSearchResult, NameSearchResult, Project } from '../shared/api'
 import { searchSkipDirs } from './projects'
 import type { ChildProcess } from 'node:child_process'
-import { spawnInWsl } from './wsl'
+import { defaultDistro, fromWslMount, spawnInWsl, toWslMount } from './wsl'
 
 const NAME_LIMIT = 500
 const CONTENT_LIMIT = 1000
@@ -25,13 +25,15 @@ async function searchScope(): Promise<string[]> {
 }
 
 /**
- * Runs ripgrep inside the distro; exit code 1 means "no matches" and is not an error, nor is exit
- * code 2 when its only complaints are unreadable folders.
+ * Runs ripgrep inside a distro; exit code 1 means "no matches" and is not an error, nor is exit
+ * code 2 when its only complaints are unreadable folders. Windows-folder projects are searched
+ * in the default distro through /mnt: that is where ripgrep runs.
  */
-function runRg(kind: SearchKind, project: Project, args: string[], run: RgRun): Promise<void> {
+async function runRg(kind: SearchKind, project: Project, args: string[], run: RgRun): Promise<void> {
+  const distro = project.distro ?? (await defaultDistro())
   return new Promise((resolve, reject) => {
     running.get(kind)?.kill()
-    const child = spawnInWsl(project.distro, ['rg', ...args])
+    const child = spawnInWsl(distro, ['rg', ...args])
     running.set(kind, child)
     let tail = ''
     let stderr = ''
@@ -72,12 +74,14 @@ function runRg(kind: SearchKind, project: Project, args: string[], run: RgRun): 
 
 export async function searchNames(project: Project, query: string): Promise<NameSearchResult> {
   const needle = query.toLowerCase()
+  const root = project.distro === null ? toWslMount(project.rootPath) : project.rootPath
   const hits: { path: string; inName: boolean }[] = []
-  await runRg('names', project, ['--files', ...(await searchScope()), project.linuxPath], {
+  await runRg('names', project, ['--files', ...(await searchScope()), root], {
     onLine(line) {
-      const relative = path.posix.relative(project.linuxPath, line)
+      const hit = project.distro === null ? fromWslMount(line) : line
+      const relative = path.posix.relative(project.rootPath, hit)
       if (!relative.toLowerCase().includes(needle)) return
-      hits.push({ path: line, inName: path.posix.basename(line).toLowerCase().includes(needle) })
+      hits.push({ path: hit, inName: path.posix.basename(hit).toLowerCase().includes(needle) })
     }
   })
   hits.sort((a, b) => Number(b.inName) - Number(a.inName) || a.path.length - b.path.length)
@@ -87,10 +91,11 @@ export async function searchNames(project: Project, query: string): Promise<Name
 export async function searchContent(project: Project, query: string): Promise<ContentSearchResult> {
   const matches: ContentMatch[] = []
   let total = 0
+  const root = project.distro === null ? toWslMount(project.rootPath) : project.rootPath
   await runRg(
     'content',
     project,
-    ['--json', '-F', '-i', ...(await searchScope()), '--max-columns', '300', '--', query, project.linuxPath],
+    ['--json', '-F', '-i', ...(await searchScope()), '--max-columns', '300', '--', query, root],
     {
       onLine(line) {
         if (!line) return
@@ -105,7 +110,8 @@ export async function searchContent(project: Project, query: string): Promise<Co
         if (!data.path?.text || data.line_number === undefined) {
           throw new Error(`ripgrep match without path or line number: ${line}`)
         }
-        matches.push({ path: data.path.text, line: data.line_number, text: (data.lines?.text ?? '').trimEnd() })
+        const hit = project.distro === null ? fromWslMount(data.path.text) : data.path.text
+        matches.push({ path: hit, line: data.line_number, text: (data.lines?.text ?? '').trimEnd() })
       }
     }
   )

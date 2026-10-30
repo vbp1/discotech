@@ -2,6 +2,7 @@ import { FolderPlus, ListFilter, X } from 'lucide-react'
 import { useState } from 'react'
 import type { Project, TransferMode } from '../../shared/api'
 import logo from './assets/logo.png'
+import { projectLocation } from './paths'
 import { FileTree, type TreeClipboard } from './FileTree'
 import { SearchResults, type SearchMode } from './SearchResults'
 
@@ -42,7 +43,7 @@ export function Sidebar(props: Props): React.JSX.Element {
         >
           {projects.length === 0 && <option value="">Нет проектов</option>}
           {projects.map((p) => (
-            <option key={p.id} value={p.id} title={`${p.distro}: ${p.linuxPath}`}>
+            <option key={p.id} value={p.id} title={projectLocation(p)}>
               {p.name}
             </option>
           ))}

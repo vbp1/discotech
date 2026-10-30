@@ -2,7 +2,7 @@ import { FolderInput, Replace, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
 import type { TreeClipboard } from './FileTree'
-import { baseName } from './paths'
+import { baseName, projectLocation } from './paths'
 import { toast } from 'sonner'
 import { EditorArea, type OpenRequest, type PathNotice } from './EditorArea'
 import { Toaster } from './Toaster'
@@ -365,9 +365,9 @@ export function App(): React.JSX.Element {
         </main>
       </div>
       <footer className="status-bar">
-        <UsageStatus distro={project?.distro ?? projects[0]?.distro ?? null} />
+        <UsageStatus distro={project?.distro ?? projects.find((p) => p.distro !== null)?.distro ?? null} />
         <span className="status-spacer" />
-        <span className="status-muted">{project ? `${project.distro}: ${project.linuxPath}` : 'Нет проекта'}</span>
+        <span className="status-muted">{project ? projectLocation(project) : 'Нет проекта'}</span>
       </footer>
       <Toaster />
       <ConfirmHost />
