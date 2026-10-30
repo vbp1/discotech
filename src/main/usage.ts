@@ -1,6 +1,7 @@
 // Usage requests follow Orca (https://github.com/stablyai/orca), MIT License,
 // Copyright (c) 2026 Lovecast Inc.: src/main/rate-limits/claude-oauth-usage-request.ts and
-// src/main/rate-limits/codex-backend-auth.ts, codex-backend-usage-client.ts.
+// src/main/rate-limits/codex-backend-auth.ts, codex-backend-usage-client.ts. The Z.ai quota
+// request follows the official zai-coding-plugins glm-plan-usage skill (query-usage.mjs).
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ProviderUsage, UsageReport, UsageWindow } from '../shared/api'
@@ -8,6 +9,8 @@ import { runInWsl, toUnc } from './wsl'
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const ZAI_QUOTA_PATH = '/api/monitor/usage/quota/limit'
+const ZAI_ORIGINS = new Set(['https://api.z.ai', 'https://open.bigmodel.cn', 'https://dev.bigmodel.cn'])
 const REQUEST_TIMEOUT_MS = 15_000
 const SESSION_SECONDS = 5 * 3600
 const WEEK_SECONDS = 7 * 24 * 3600
@@ -149,8 +152,57 @@ async function codexUsage(home: string, distro: string): Promise<ProviderUsage> 
   }
 }
 
+/** Maps the window length the service sends to the labels the status bar shows; unit 3 is hours, 6 is weeks. */
+function zaiWindowLabel(unit: unknown, number: unknown): string {
+  if (unit === 3 && number === 5) return '5 часов'
+  if (unit === 6 && number === 1) return 'Неделя'
+  if (unit === 3 && typeof number === 'number') return `${number} ч`
+  if (unit === 6 && typeof number === 'number') return `${number} нед.`
+  return 'Окно лимита'
+}
+
+// The GLM Coding Plan key Claude Code uses; the quota endpoint is asked at the domain of
+// ANTHROPIC_BASE_URL, as the official glm-plan-usage plugin does.
+async function zaiUsage(home: string, distro: string): Promise<ProviderUsage> {
+  const source = toUnc(distro, path.posix.join(home, '.claude/settings.json'))
+  try {
+    const settings = await readJson(source)
+    const env = settings.env as Record<string, unknown> | undefined
+    const token = typeof env?.ANTHROPIC_AUTH_TOKEN === 'string' ? env.ANTHROPIC_AUTH_TOKEN : ''
+    const baseUrl = typeof env?.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : ''
+    if (!token || !baseUrl) throw new Error(`В ${source} нет env.ANTHROPIC_AUTH_TOKEN или env.ANTHROPIC_BASE_URL — настроек подписки Z.ai для Claude Code`)
+    let origin: string
+    try {
+      origin = new URL(baseUrl).origin
+    } catch {
+      throw new Error(`env.ANTHROPIC_BASE_URL в ${source} не похож на адрес: ${baseUrl}`)
+    }
+    if (!ZAI_ORIGINS.has(origin)) throw new Error(`env.ANTHROPIC_BASE_URL в ${source} ведёт не к Z.ai: ${baseUrl}`)
+    const data = await getJson(
+      `${origin}${ZAI_QUOTA_PATH}`,
+      { Authorization: token, 'Accept-Language': 'en-US,en', 'Content-Type': 'application/json' },
+      'Ключ Z.ai не принят: обновите ключ подписки на z.ai и запишите его в env.ANTHROPIC_AUTH_TOKEN'
+    )
+    const payload = data.data as { level?: unknown; limits?: unknown } | null | undefined
+    const limits = Array.isArray(payload?.limits) ? (payload?.limits as Record<string, unknown>[]) : []
+    const windows: UsageWindow[] = []
+    for (const limit of limits) {
+      if (limit.type !== 'CREDIT_LIMIT') continue
+      windows.push({
+        label: zaiWindowLabel(limit.unit, limit.number),
+        usedPercent: percent(limit.percentage, 'limits[].percentage'),
+        resetsAt: parseTime(limit.nextResetTime)
+      })
+    }
+    if (windows.length === 0) throw unexpected('limits', limits)
+    return { status: 'ok', plan: typeof payload?.level === 'string' ? payload.level : null, windows, source, fetchedAt: Date.now() }
+  } catch (error) {
+    return { status: 'error', message: (error as Error).message, source, fetchedAt: Date.now() }
+  }
+}
+
 export async function getUsage(distro: string): Promise<UsageReport> {
   const home = await linuxHome(distro)
-  const [claude, codex] = await Promise.all([claudeUsage(home, distro), codexUsage(home, distro)])
-  return { claude, codex }
+  const [claude, codex, zai] = await Promise.all([claudeUsage(home, distro), codexUsage(home, distro), zaiUsage(home, distro)])
+  return { claude, codex, zai }
 }

@@ -1,7 +1,7 @@
 import { RefreshCw, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderUsage, UsageReport, UsageWindow } from '../../shared/api'
-import { ClaudeIcon, OpenAIIcon } from './providerIcons'
+import { ClaudeIcon, OpenAIIcon, ZaiIcon } from './providerIcons'
 import { errorText } from './errors'
 
 const REFRESH_INTERVAL_MS = 5 * 60_000
@@ -147,7 +147,7 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
 
   return (
     <div className="usage" ref={rootRef}>
-      <button className="usage-compact" onClick={() => setOpen(!open)} title="Лимиты Claude и Codex">
+      <button className="usage-compact" onClick={() => setOpen(!open)} title="Лимиты Claude, Codex и Z.ai">
         <span className="usage-used">Used</span>
         {state.status === 'failed' && !report ? (
           <span className="usage-chip usage-high" title={state.message}>
@@ -157,6 +157,7 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
           <>
             {compact('Claude', <ClaudeIcon />, report?.claude)}
             {compact('Codex', <OpenAIIcon />, report?.codex)}
+            {compact('Z.ai', <ZaiIcon />, report?.zai)}
           </>
         )}
       </button>
@@ -170,6 +171,7 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
             <>
               {details('Claude', <ClaudeIcon />, report.claude)}
               {details('Codex', <OpenAIIcon />, report.codex)}
+              {details('Z.ai', <ZaiIcon />, report.zai)}
             </>
           ) : (
             state.status !== 'failed' && <div className="status-muted">Загрузка…</div>
@@ -179,7 +181,7 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
               {state.status === 'loading'
                 ? 'Обновление…'
                 : report
-                  ? `Обновлено в ${new Date(Math.min(report.claude.fetchedAt, report.codex.fetchedAt)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}, автообновление раз в 5 минут`
+                  ? `Обновлено в ${new Date(Math.min(report.claude.fetchedAt, report.codex.fetchedAt, report.zai.fetchedAt)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}, автообновление раз в 5 минут`
                   : ''}
             </span>
             <button disabled={state.status === 'loading'} onClick={() => void refresh()}>

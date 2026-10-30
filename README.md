@@ -21,8 +21,9 @@ and a viewer, plus your Claude and Codex usage limits in the status bar. Styled 
   with a source view. Preview tabs, pinned tabs, separate zoom for the tree and the editor.
 - **Disk changes** — an unchanged tab follows the file on disk; a tab with edits warns and lets you
   choose; a save never overwrites a newer file without asking.
-- **Usage limits** — Claude (5-hour and weekly windows) and Codex, read with the logins of the
-  `claude` and `codex` CLIs in the distro's home.
+- **Usage limits** — Claude (5-hour and weekly windows), Codex, and Z.ai (GLM Coding Plan,
+  from the `ANTHROPIC_AUTH_TOKEN` Claude Code uses), read with the logins of the `claude` and
+  `codex` CLIs in the distro's home.
 
 ## Requirements
 

@@ -26,3 +26,13 @@ export function OpenAIIcon({ size = 14 }: { size?: number }): React.JSX.Element 
     </svg>
   )
 }
+
+// A plain "Z" badge: Z.ai publishes no mark that may be reused here.
+export function ZaiIcon({ size = 14 }: { size?: number }): React.JSX.Element {
+  return (
+    <svg height={size} width={size} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-label="Z.ai">
+      <rect x="1.5" y="1.5" width="21" height="21" rx="5" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.5" />
+      <path d="M8 7.5h8L8 16.5h8" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}

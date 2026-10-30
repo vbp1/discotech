@@ -79,7 +79,7 @@ export type DiscotechApi = {
   searchContent(project: Project, query: string): Promise<ContentSearchResult>
   /** Text the HTML preview shows for a file instead of its disk content; null forgets it. */
   setPreviewDraft(distro: string, linuxPath: string, text: string | null): Promise<void>
-  /** Reads Claude and Codex logins from the distro's home and asks both services for usage. */
+  /** Reads Claude, Codex and Z.ai logins from the distro's home and asks the services for usage. */
   getUsage(distro: string): Promise<UsageReport>
   onFsEvent(listener: (event: FsEvent) => void): () => void
   onWatchStatus(listener: (status: WatchStatus) => void): () => void
@@ -115,4 +115,4 @@ export type ProviderUsage =
   | { status: 'ok'; plan: string | null; windows: UsageWindow[]; source: string; fetchedAt: number }
   | { status: 'error'; message: string; source: string; fetchedAt: number }
 
-export type UsageReport = { claude: ProviderUsage; codex: ProviderUsage }
+export type UsageReport = { claude: ProviderUsage; codex: ProviderUsage; zai: ProviderUsage }
