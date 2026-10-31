@@ -81,8 +81,11 @@ export type DiscotechApi = {
   searchContent(project: Project, query: string): Promise<ContentSearchResult>
   /** Text the HTML preview shows for a file instead of its disk content; null forgets it. */
   setPreviewDraft(distro: string | null, projectPath: string, text: string | null): Promise<void>
-  /** Reads Claude, Codex and Z.ai logins from the distro's home and asks the services for usage. */
-  getUsage(distro: string): Promise<UsageReport>
+  /**
+   * Reads Claude, Codex and Z.ai logins from the distro's home and asks the services for usage.
+   * Providers named in disabled are not asked at all and are missing from the report.
+   */
+  getUsage(distro: string, disabled: UsageProviderId[]): Promise<UsageReport>
   onFsEvent(listener: (event: FsEvent) => void): () => void
   onWatchStatus(listener: (status: WatchStatus) => void): () => void
 }
@@ -117,4 +120,7 @@ export type ProviderUsage =
   | { status: 'ok'; plan: string | null; windows: UsageWindow[]; source: string; fetchedAt: number }
   | { status: 'error'; message: string; source: string; fetchedAt: number }
 
-export type UsageReport = { claude: ProviderUsage; codex: ProviderUsage; zai: ProviderUsage }
+/** A limit check the status bar runs; the user turns checks off in the widget's context menu. */
+export type UsageProviderId = 'claude' | 'codex' | 'zai'
+
+export type UsageReport = { claude?: ProviderUsage; codex?: ProviderUsage; zai?: ProviderUsage }

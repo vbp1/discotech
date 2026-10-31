@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'electron'
 import path from 'node:path'
-import type { Project, SessionState, TransferMode } from '../shared/api'
+import type { Project, SessionState, TransferMode, UsageProviderId } from '../shared/api'
 import { loadSession, saveSession } from './session'
 import { createFileContent, deletePath, listDir, readFileContent, transferPath, writeFileContent } from './files'
 import { handlePreviewScheme, PREVIEW_SCHEME, registerPreviewScheme, setPreviewDraft } from './preview'
@@ -130,7 +130,7 @@ function registerIpc(): void {
   ipcMain.handle('preview:draft', (_e, distro: string | null, projectPath: string, text: string | null) =>
     setPreviewDraft(distro, projectPath, text)
   )
-  ipcMain.handle('usage:get', (_e, distro: string) => getUsage(distro))
+  ipcMain.handle('usage:get', (_e, distro: string, disabled: UsageProviderId[]) => getUsage(distro, disabled))
   ipcMain.handle('search:names', (_e, project: Project, query: string) => searchNames(project, query))
   ipcMain.handle('search:content', (_e, project: Project, query: string) => searchContent(project, query))
 }

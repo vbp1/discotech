@@ -26,7 +26,7 @@ const api: DiscotechApi = {
   searchNames: (project, query) => ipcRenderer.invoke('search:names', project, query),
   searchContent: (project, query) => ipcRenderer.invoke('search:content', project, query),
   setPreviewDraft: (distro, projectPath, text) => ipcRenderer.invoke('preview:draft', distro, projectPath, text),
-  getUsage: (distro) => ipcRenderer.invoke('usage:get', distro),
+  getUsage: (distro, disabled) => ipcRenderer.invoke('usage:get', distro, disabled),
   onFsEvent: (listener) => subscribe<FsEvent>('fs:event', listener),
   onWatchStatus: (listener) => subscribe<WatchStatus>('fs:watch-status', listener)
 }

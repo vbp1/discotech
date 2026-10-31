@@ -1087,6 +1087,42 @@ body.resizing {
   color: var(--destructive);
 }
 
+/* The right-click menu that turns individual limit checks on and off. */
+.usage-menu {
+  position: absolute;
+  /* Opens upward from the click point: the widget sits at the bottom of the window. */
+  transform: translateY(-100%);
+  min-width: 150px;
+  padding: 4px;
+  font-size: 12px;
+  background: var(--popover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  z-index: 11;
+}
+
+.usage-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.usage-menu label:hover {
+  background: var(--accent);
+}
+
+.usage-menu input {
+  margin: 0;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--primary);
+}
+
 .usage-footer {
   display: flex;
   align-items: center;

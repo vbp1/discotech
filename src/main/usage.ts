@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Lovecast Inc.: src/main/rate-limits/claude-oauth-usage-request.ts and
 // src/main/rate-limits/codex-backend-auth.ts, codex-backend-usage-client.ts. The Z.ai quota
 // request follows the official zai-coding-plugins glm-plan-usage skill (query-usage.mjs).
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
-import type { ProviderUsage, UsageReport, UsageWindow } from '../shared/api'
+import type { ProviderUsage, UsageProviderId, UsageReport, UsageWindow } from '../shared/api'
 import { runInWsl, toUnc } from './wsl'
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
@@ -161,23 +161,53 @@ function zaiWindowLabel(unit: unknown, number: unknown): string {
   return 'Окно лимита'
 }
 
-// The GLM Coding Plan key Claude Code uses; the quota endpoint is asked at the domain of
-// ANTHROPIC_BASE_URL, as the official glm-plan-usage plugin does.
-async function zaiUsage(home: string, distro: string): Promise<ProviderUsage> {
-  const source = toUnc(distro, path.posix.join(home, '.claude/settings.json'))
+// Claude Code providers are settings files ~/.claude/settings-<name>.json (the claude-provider
+// wrapper passes the chosen one via --settings). The Z.ai chip reads whichever provider file
+// points ANTHROPIC_BASE_URL at Z.ai, so the GLM Coding Plan quota stays visible whatever
+// provider is currently the default.
+async function zaiCredentials(home: string, distro: string): Promise<{ token: string; origin: string; source: string }> {
+  const dir = toUnc(distro, path.posix.join(home, '.claude'))
+  let names: string[]
   try {
-    const settings = await readJson(source)
-    const env = settings.env as Record<string, unknown> | undefined
+    names = (await readdir(dir)).filter((name) => /^settings-.+\.json$/.test(name)).sort()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Каталог ${dir} не найден — нет настроек Claude Code`)
+    throw error
+  }
+  const unreadable: string[] = []
+  for (const name of names) {
+    const source = toUnc(distro, path.posix.join(home, '.claude', name))
+    let env: Record<string, unknown> | undefined
+    try {
+      env = (await readJson(source)).env as Record<string, unknown> | undefined
+    } catch (error) {
+      unreadable.push(`${name} (${(error as Error).message})`)
+      continue
+    }
     const token = typeof env?.ANTHROPIC_AUTH_TOKEN === 'string' ? env.ANTHROPIC_AUTH_TOKEN : ''
     const baseUrl = typeof env?.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : ''
-    if (!token || !baseUrl) throw new Error(`В ${source} нет env.ANTHROPIC_AUTH_TOKEN или env.ANTHROPIC_BASE_URL — настроек подписки Z.ai для Claude Code`)
-    let origin: string
+    if (!token || !baseUrl) continue
+    let origin: string | null = null
     try {
       origin = new URL(baseUrl).origin
     } catch {
-      throw new Error(`env.ANTHROPIC_BASE_URL в ${source} не похож на адрес: ${baseUrl}`)
+      origin = null
     }
-    if (!ZAI_ORIGINS.has(origin)) throw new Error(`env.ANTHROPIC_BASE_URL в ${source} ведёт не к Z.ai: ${baseUrl}`)
+    if (origin === null || !ZAI_ORIGINS.has(origin)) continue
+    return { token, origin, source }
+  }
+  const unreadableNote = unreadable.length > 0 ? ` Пропущены нечитаемые файлы: ${unreadable.join('; ')}.` : ''
+  throw new Error(
+    `Ни один файл settings-*.json в ${dir} не содержит env.ANTHROPIC_AUTH_TOKEN и env.ANTHROPIC_BASE_URL к Z.ai ` +
+      `(${[...ZAI_ORIGINS].join(', ')}) — настроек подписки Z.ai для Claude Code.${unreadableNote}`
+  )
+}
+
+// The quota endpoint is asked at the domain of ANTHROPIC_BASE_URL, as the official glm-plan-usage plugin does.
+async function zaiUsage(home: string, distro: string): Promise<ProviderUsage> {
+  const fallbackSource = toUnc(distro, path.posix.join(home, '.claude'))
+  try {
+    const { token, origin, source } = await zaiCredentials(home, distro)
     const data = await getJson(
       `${origin}${ZAI_QUOTA_PATH}`,
       { Authorization: token, 'Accept-Language': 'en-US,en', 'Content-Type': 'application/json' },
@@ -197,12 +227,25 @@ async function zaiUsage(home: string, distro: string): Promise<ProviderUsage> {
     if (windows.length === 0) throw unexpected('limits', limits)
     return { status: 'ok', plan: typeof payload?.level === 'string' ? payload.level : null, windows, source, fetchedAt: Date.now() }
   } catch (error) {
-    return { status: 'error', message: (error as Error).message, source, fetchedAt: Date.now() }
+    return { status: 'error', message: (error as Error).message, source: fallbackSource, fetchedAt: Date.now() }
   }
 }
 
-export async function getUsage(distro: string): Promise<UsageReport> {
+const USAGE_PROVIDERS: readonly UsageProviderId[] = ['claude', 'codex', 'zai']
+
+export async function getUsage(distro: string, disabled: UsageProviderId[]): Promise<UsageReport> {
+  for (const id of disabled) {
+    if (!USAGE_PROVIDERS.includes(id)) {
+      throw new Error(`Неизвестный провайдер лимитов "${id}"; ожидаются claude, codex, zai. Ничего не запрошено.`)
+    }
+  }
+  const skip = new Set(disabled)
   const home = await linuxHome(distro)
-  const [claude, codex, zai] = await Promise.all([claudeUsage(home, distro), codexUsage(home, distro), zaiUsage(home, distro)])
-  return { claude, codex, zai }
+  const jobs: [UsageProviderId, Promise<ProviderUsage>][] = []
+  if (!skip.has('claude')) jobs.push(['claude', claudeUsage(home, distro)])
+  if (!skip.has('codex')) jobs.push(['codex', codexUsage(home, distro)])
+  if (!skip.has('zai')) jobs.push(['zai', zaiUsage(home, distro)])
+  const report: UsageReport = {}
+  await Promise.all(jobs.map(async ([id, job]) => (report[id] = await job)))
+  return report
 }

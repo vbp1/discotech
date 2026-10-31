@@ -1,18 +1,41 @@
 import { RefreshCw, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ProviderUsage, UsageReport, UsageWindow } from '../../shared/api'
+import type { ProviderUsage, UsageProviderId, UsageReport, UsageWindow } from '../../shared/api'
 import { ClaudeIcon, OpenAIIcon, ZaiIcon } from './providerIcons'
 import { errorText } from './errors'
 
 const REFRESH_INTERVAL_MS = 5 * 60_000
 const FOCUS_REFRESH_AFTER_MS = 60_000
 const TICK_MS = 30_000
+const STORAGE_KEY = 'discotech.usage'
+
+type ProviderInfo = { id: UsageProviderId; name: string; icon: (props: { size?: number }) => React.JSX.Element }
+
+const PROVIDERS: readonly ProviderInfo[] = [
+  { id: 'claude', name: 'Claude', icon: ClaudeIcon },
+  { id: 'codex', name: 'Codex', icon: OpenAIIcon },
+  { id: 'zai', name: 'Z.ai', icon: ZaiIcon }
+]
 
 type State =
   | { status: 'idle' }
   | { status: 'loading'; previous: UsageReport | null }
   | { status: 'ready'; report: UsageReport }
   | { status: 'failed'; message: string; previous: UsageReport | null }
+
+/** Which checks are turned off in the context menu; the same shape is kept in localStorage. */
+function loadDisabled(): UsageProviderId[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { disabled?: unknown }
+    if (!Array.isArray(parsed.disabled)) return []
+    return parsed.disabled.filter((id): id is UsageProviderId => PROVIDERS.some((p) => p.id === id))
+  } catch {
+    // Per-machine convenience, as the layout prefs: unreadable storage means every check is on.
+    return []
+  }
+}
 
 function timeLeft(resetsAt: number | null, now: number): string {
   if (resetsAt === null) return '—'
@@ -45,24 +68,39 @@ type Props = { distro: string | null }
 export function UsageStatus({ distro }: Props): React.JSX.Element | null {
   const [state, setState] = useState<State>({ status: 'idle' })
   const [open, setOpen] = useState(false)
+  const [disabled, setDisabled] = useState<UsageProviderId[]>(loadDisabled)
+  /** Where the context menu was opened, relative to the widget; null when closed. */
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
   const [now, setNow] = useState(Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
   const lastFetch = useRef(0)
 
   const report = state.status === 'ready' ? state.report : state.status === 'idle' ? null : state.previous
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ disabled }))
+    } catch {
+      // See loadDisabled(): storage is optional.
+    }
+  }, [disabled])
+
+  const isOff = (id: UsageProviderId): boolean => disabled.includes(id)
+  const toggle = (id: UsageProviderId): void =>
+    setDisabled((d) => (d.includes(id) ? d.filter((x) => x !== id) : [...d, id]))
+
   const refresh = useCallback(async () => {
     if (!distro) return
     lastFetch.current = Date.now()
     setState((prev) => ({ status: 'loading', previous: prev.status === 'ready' ? prev.report : prev.status === 'idle' ? null : prev.previous }))
     try {
-      const next = await window.discotech.getUsage(distro)
+      const next = await window.discotech.getUsage(distro, disabled)
       setState({ status: 'ready', report: next })
     } catch (e) {
       setState((prev) => ({ status: 'failed', message: errorText(e), previous: prev.status === 'loading' ? prev.previous : null }))
     }
     setNow(Date.now())
-  }, [distro])
+  }, [distro, disabled])
 
   useEffect(() => {
     void refresh()
@@ -79,13 +117,18 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
     }
   }, [refresh])
 
+  const closeAll = (): void => {
+    setOpen(false)
+    setMenuAt(null)
+  }
+
   useEffect(() => {
-    if (!open) return
+    if (!open && menuAt === null) return
     const onDown = (e: PointerEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+      if (!rootRef.current?.contains(e.target as Node)) closeAll()
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key === 'Escape') closeAll()
     }
     window.addEventListener('pointerdown', onDown)
     window.addEventListener('keydown', onKey)
@@ -93,34 +136,49 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
       window.removeEventListener('pointerdown', onDown)
       window.removeEventListener('keydown', onKey)
     }
-  }, [open])
+  }, [open, menuAt])
+
+  const onContextMenu = (e: React.MouseEvent): void => {
+    e.preventDefault()
+    const rect = rootRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setOpen(false)
+    setMenuAt({ x: e.clientX - rect.left, y: e.clientY - rect.top })
+  }
 
   if (!distro) return null
 
-  const compact = (name: string, icon: React.JSX.Element, usage: ProviderUsage | undefined): React.JSX.Element => {
-    if (!usage) return <span className="usage-chip status-muted" title={name}>{icon} …</span>
+  const compact = (p: ProviderInfo, usage: ProviderUsage | undefined): React.JSX.Element => {
+    if (!usage)
+      return (
+        <span className="usage-chip status-muted" title={p.name}>
+          <p.icon /> …
+        </span>
+      )
     if (usage.status === 'error')
       return (
-        <span className="usage-chip usage-high" title={`${name}: ${usage.message}`}>
-          {icon} <TriangleAlert size={12} />
+        <span className="usage-chip usage-high" title={`${p.name}: ${usage.message}`}>
+          <p.icon /> <TriangleAlert size={12} />
         </span>
       )
     const w = tightest(usage.windows)
     return (
-      <span className={`usage-chip ${level(w.usedPercent)}`} title={`${name} · ${w.label}: ${w.usedPercent}%`}>
-        {icon} {Math.round(w.usedPercent)}% <span className="usage-left">{timeLeft(w.resetsAt, now)}</span>
+      <span className={`usage-chip ${level(w.usedPercent)}`} title={`${p.name} · ${w.label}: ${w.usedPercent}%`}>
+        <p.icon /> {Math.round(w.usedPercent)}% <span className="usage-left">{timeLeft(w.resetsAt, now)}</span>
       </span>
     )
   }
 
-  const details = (name: string, icon: React.JSX.Element, usage: ProviderUsage): React.JSX.Element => (
+  const details = (p: ProviderInfo, usage: ProviderUsage | undefined): React.JSX.Element => (
     <section className="usage-provider">
       <header>
-        {icon}
-        <strong>{name}</strong>
-        {usage.status === 'ok' && usage.plan && <span className="usage-plan">{usage.plan}</span>}
+        <p.icon />
+        <strong>{p.name}</strong>
+        {usage && usage.status === 'ok' && usage.plan && <span className="usage-plan">{usage.plan}</span>}
       </header>
-      {usage.status === 'error' ? (
+      {usage === undefined ? (
+        <div className="status-muted">Загрузка…</div>
+      ) : usage.status === 'error' ? (
         <div className="usage-error">{usage.message}</div>
       ) : (
         usage.windows.map((w) => (
@@ -139,26 +197,35 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
           </div>
         ))
       )}
-      <div className="usage-source" title={usage.source}>
-        вход: {usage.source}
-      </div>
+      {usage && (
+        <div className="usage-source" title={usage.source}>
+          вход: {usage.source}
+        </div>
+      )}
     </section>
   )
 
+  const shown = PROVIDERS.filter((p) => !isOff(p.id))
+  const fetchedAt = shown.map((p) => report?.[p.id]?.fetchedAt).filter((t): t is number => t !== undefined)
+
   return (
-    <div className="usage" ref={rootRef}>
-      <button className="usage-compact" onClick={() => setOpen(!open)} title="Лимиты Claude, Codex и Z.ai">
+    <div className="usage" ref={rootRef} onContextMenu={onContextMenu}>
+      <button
+        className="usage-compact"
+        onClick={() => setOpen(!open)}
+        title="Лимиты Claude, Codex и Z.ai. Правый клик — включить или отключить отдельные проверки."
+      >
         <span className="usage-used">Used</span>
         {state.status === 'failed' && !report ? (
           <span className="usage-chip usage-high" title={state.message}>
             Лимиты <TriangleAlert size={12} />
           </span>
+        ) : shown.length === 0 ? (
+          <span className="usage-chip status-muted" title="Все проверки отключены — правый клик, чтобы включить">
+            —
+          </span>
         ) : (
-          <>
-            {compact('Claude', <ClaudeIcon />, report?.claude)}
-            {compact('Codex', <OpenAIIcon />, report?.codex)}
-            {compact('Z.ai', <ZaiIcon />, report?.zai)}
-          </>
+          shown.map((p) => compact(p, report?.[p.id]))
         )}
       </button>
       <button className="usage-refresh" title="Обновить лимиты" disabled={state.status === 'loading'} onClick={() => void refresh()}>
@@ -167,27 +234,32 @@ export function UsageStatus({ distro }: Props): React.JSX.Element | null {
       {open && (
         <div className="usage-popup">
           {state.status === 'failed' && <div className="usage-error">Не удалось обновить: {state.message}</div>}
-          {report ? (
-            <>
-              {details('Claude', <ClaudeIcon />, report.claude)}
-              {details('Codex', <OpenAIIcon />, report.codex)}
-              {details('Z.ai', <ZaiIcon />, report.zai)}
-            </>
-          ) : (
-            state.status !== 'failed' && <div className="status-muted">Загрузка…</div>
-          )}
+          {report
+            ? shown.map((p) => details(p, report[p.id]))
+            : state.status !== 'failed' && <div className="status-muted">Загрузка…</div>}
           <footer className="usage-footer">
             <span className="status-muted">
               {state.status === 'loading'
                 ? 'Обновление…'
-                : report
-                  ? `Обновлено в ${new Date(Math.min(report.claude.fetchedAt, report.codex.fetchedAt, report.zai.fetchedAt)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}, автообновление раз в 5 минут`
+                : fetchedAt.length > 0
+                  ? `Обновлено в ${new Date(Math.min(...fetchedAt)).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}, автообновление раз в 5 минут`
                   : ''}
             </span>
             <button disabled={state.status === 'loading'} onClick={() => void refresh()}>
               Обновить
             </button>
           </footer>
+        </div>
+      )}
+      {menuAt && (
+        <div className="usage-menu" style={{ left: menuAt.x, top: menuAt.y }} role="menu">
+          {PROVIDERS.map((p) => (
+            <label key={p.id}>
+              <input type="checkbox" checked={!isOff(p.id)} onChange={() => toggle(p.id)} />
+              <p.icon size={14} />
+              {p.name}
+            </label>
+          ))}
         </div>
       )}
     </div>
