@@ -1,7 +1,7 @@
 import { copyFile, cp, lstat, mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
-import type { DirEntry, FileContent, Project, TransferMode, TransferResult, WriteResult } from '../shared/api'
+import type { DirEntry, FileContent, MovePathsResult, Project, TransferMode, TransferResult, WriteResult } from '../shared/api'
 import { assertInsideProject, osPath, runInWsl } from './wsl'
 
 const MAX_TEXT_BYTES = 5 * 1024 * 1024
@@ -229,13 +229,9 @@ async function freeCopyName(project: Project, dir: string, name: string, isDir: 
  * the distro: Windows cannot handle Linux symlinks over the network path; Windows-folder
  * projects use the native file system.
  */
-export async function transferPath(
-  project: Project,
-  from: string,
-  toDir: string,
-  mode: TransferMode,
-  overwrite: boolean
-): Promise<TransferResult> {
+type TransferPlan = { from: string; to: string; sourceIsDir: boolean; taken: boolean }
+
+async function prepareTransfer(project: Project, from: string, toDir: string, mode: TransferMode): Promise<TransferPlan> {
   assertInsideProject(project, from)
   assertInsideProject(project, toDir)
   const name = path.posix.basename(from)
@@ -256,8 +252,20 @@ export async function transferPath(
         `${to} is a ${targetIsDir ? 'folder' : 'file'} and "${name}" is a ${sourceIsDir ? 'folder' : 'file'}: one cannot replace the other. Nothing was changed.`
       )
     }
-    if (!overwrite) return { status: 'exists', to, isDir: targetIsDir }
   }
+  return { from, to, sourceIsDir, taken }
+}
+
+export async function transferPath(
+  project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean
+): Promise<TransferResult> {
+  const plan = await prepareTransfer(project, from, toDir, mode)
+  if (plan.taken && !overwrite) return { status: 'exists', to: plan.to, isDir: plan.sourceIsDir }
+  return executeTransfer(project, plan, mode)
+}
+
+async function executeTransfer(project: Project, plan: TransferPlan, mode: TransferMode): Promise<TransferResult> {
+  const { from, to, sourceIsDir, taken } = plan
   const target = osPath(project, to)
   const source = osPath(project, from)
   if (!taken) {
@@ -298,6 +306,67 @@ export async function transferPath(
     }
   }
   return { status: 'done', to }
+}
+
+/** Validates the complete group before any move; ordinary WSL moves use one mv invocation. */
+export async function movePaths(project: Project, paths: string[], toDir: string, overwrite: boolean): Promise<MovePathsResult> {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== 'string')) {
+    throw new Error('Expected a non-empty list of file paths.')
+  }
+  assertInsideProject(project, toDir)
+  const names = new Set<string>()
+  for (const from of paths) {
+    assertInsideProject(project, from)
+    if (path.posix.normalize(from) !== from) throw new Error(`Expected a normalized path: "${from}".`)
+    const name = path.posix.basename(from)
+    const key = isWindowsProject(project) ? name.toLowerCase() : name
+    if (names.has(key)) throw new Error(`The selection contains more than one "${name}". Move them separately.`)
+    names.add(key)
+    if (paths.some((other) => other !== from && from.startsWith(other + '/'))) {
+      throw new Error('Move the selected folder without also listing its descendants.')
+    }
+  }
+  if (!(await isDirectory(project, toDir))) throw new Error(`"${toDir}" is not a folder.`)
+  const plans = await Promise.all(paths.map((from) => prepareTransfer(project, from, toDir, 'move')))
+  const conflicts = plans.filter((p) => p.taken).map((p) => ({ to: p.to, isDir: p.sourceIsDir }))
+  if (conflicts.length > 0 && !overwrite) return { status: 'exists', conflicts }
+
+  if (!isWindowsProject(project) && plans.every((p) => !p.taken)) {
+    let error: string | null = null
+    try {
+      await runChecked(project, ['mv', '-n', '-t', toDir, '--', ...paths])
+    } catch (e) {
+      error = (e as Error).message
+    }
+    const remaining = await Promise.all(plans.map((p) => pathExists(project, p.from)))
+    const moves = plans.filter((_, index) => !remaining[index]).map(({ from, to }) => ({ from, to }))
+    if (error || moves.length !== plans.length) {
+      return { status: 'failed', moves, error: error ?? 'Some destinations appeared during the move; those sources were left in place.' }
+    }
+    return { status: 'done', moves }
+  }
+
+  // Native renames and confirmed folder merges run together, after the common preflight.
+  const results = await Promise.allSettled(plans.map((p) => executeTransfer(project, p, 'move')))
+  const moves = plans.filter((_, index) => results[index].status === 'fulfilled').map(({ from, to }) => ({ from, to }))
+  const errors = results.flatMap((result) => result.status === 'rejected' ? [String(result.reason)] : [])
+  return errors.length > 0 ? { status: 'failed', moves, error: errors.join('\n') } : { status: 'done', moves }
+}
+
+/** Creates one folder; existing entries and invalid names are errors. */
+export async function createDir(project: Project, parent: string, name: string): Promise<string> {
+  assertInsideProject(project, parent)
+  if (typeof name !== 'string' || name.length === 0 || name.trim() !== name || name === '.' || name === '..' || /[/\\]/.test(name) || [...name].some((char) => char.charCodeAt(0) < 32)) {
+    throw new Error(`Invalid folder name "${name}". Enter one name without slashes or leading/trailing spaces.`)
+  }
+  if (isWindowsProject(project) && (/[<>:"|?*]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))) {
+    throw new Error(`"${name}" is not a valid Windows folder name.`)
+  }
+  const target = path.posix.join(parent, name)
+  assertInsideProject(project, target)
+  if (isWindowsProject(project)) await mkdir(osPath(project, target))
+  else await runChecked(project, ['mkdir', '--', target])
+  return target
 }
 
 /** Deletes a file or folder for good; a symlink is removed, not its target. */

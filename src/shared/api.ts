@@ -70,6 +70,9 @@ export type DiscotechApi = {
    * folder gets a free "name copy" name.
    */
   transferPath(project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean): Promise<TransferResult>
+  /** Checks the whole group before moving; reports any completed moves if the file system fails. */
+  movePaths(project: Project, paths: string[], toDir: string, overwrite: boolean): Promise<MovePathsResult>
+  createDir(project: Project, parent: string, name: string): Promise<string>
   /** The project and tabs open when the app last ran; empty on a first launch. */
   getSession(): Promise<SessionState>
   /** Replaces the stored session. */
@@ -103,6 +106,12 @@ export type SessionState = {
   activeProjectId: string | null
   projects: Record<string, { tabs: SessionTab[]; active: string | null }>
 }
+
+export type PathMove = { from: string; to: string }
+export type MovePathsResult =
+  | { status: 'exists'; conflicts: { to: string; isDir: boolean }[] }
+  | { status: 'done'; moves: PathMove[] }
+  | { status: 'failed'; moves: PathMove[]; error: string }
 
 export type TransferMode = 'move' | 'copy'
 

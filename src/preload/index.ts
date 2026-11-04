@@ -19,6 +19,8 @@ const api: DiscotechApi = {
   closeWindowDiscarding: () => ipcRenderer.invoke('window:close-discarding'),
   transferPath: (project, from, toDir, mode, overwrite) =>
     ipcRenderer.invoke('fs:transfer', project, from, toDir, mode, overwrite),
+  movePaths: (project, paths, toDir, overwrite) => ipcRenderer.invoke('fs:move-many', project, paths, toDir, overwrite),
+  createDir: (project, parent, name) => ipcRenderer.invoke('fs:mkdir', project, parent, name),
   getSession: () => ipcRenderer.invoke('session:get'),
   setSession: (state) => ipcRenderer.invoke('session:set', state),
   deletePath: (project, projectPath) => ipcRenderer.invoke('fs:delete', project, projectPath),

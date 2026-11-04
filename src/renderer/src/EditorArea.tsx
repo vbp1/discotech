@@ -1,6 +1,6 @@
 import { FileText, Pin, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import type { Project, SessionTab } from '../../shared/api'
+import type { PathMove, Project, SessionTab } from '../../shared/api'
 import { confirmDialog } from './confirm'
 import { baseName, rootPrefix } from './paths'
 import { TabBody } from './TabBody'
@@ -13,7 +13,7 @@ export type OpenRequest = { path: string; line?: number; nonce: number }
  * tabs at or under a deleted path close (files with unsaved edits are never moved or deleted).
  */
 export type PathNotice =
-  | { kind: 'moved'; projectId: string; from: string; to: string; nonce: number }
+  | { kind: 'moved'; projectId: string; moves: PathMove[]; nonce: number }
   | { kind: 'deleted'; projectId: string; path: string; nonce: number }
 
 // At most one tab is unpinned: the preview tab that the next opened file replaces.
@@ -64,15 +64,18 @@ export function EditorArea(props: Props): React.JSX.Element {
 
   useEffect(() => {
     if (!pathNotice) return
-    const root = pathNotice.kind === 'moved' ? pathNotice.from : pathNotice.path
-    const under = (p: string): boolean => p === root || p.startsWith(root + '/')
-    setDeleted((prev) => new Set([...prev].filter((p) => !under(p))))
     if (pathNotice.kind === 'moved') {
-      const follow = (p: string): string => (under(p) ? pathNotice.to + p.slice(root.length) : p)
+      const follow = (p: string): string => {
+        const move = pathNotice.moves.find((m) => p === m.from || p.startsWith(m.from + '/'))
+        return move ? move.to + p.slice(move.from.length) : p
+      }
+      setDeleted((prev) => new Set([...prev].filter((p) => follow(p) === p)))
       setTabs((prev) => prev.map((t) => ({ ...t, path: follow(t.path) })))
       setActivePath((prev) => (prev === null ? null : follow(prev)))
       return
     }
+    const under = (p: string): boolean => p === pathNotice.path || p.startsWith(pathNotice.path + '/')
+    setDeleted((prev) => new Set([...prev].filter((p) => !under(p))))
     const rest = tabs.filter((t) => !under(t.path))
     setTabs(rest)
     if (activePath !== null && under(activePath)) setActivePath(rest[rest.length - 1]?.path ?? null)

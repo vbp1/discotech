@@ -1,6 +1,6 @@
 import { FolderPlus, ListFilter, X } from 'lucide-react'
 import { useState } from 'react'
-import type { Project, TransferMode } from '../../shared/api'
+import type { PathMove, Project, TransferMode } from '../../shared/api'
 import logo from './assets/logo.png'
 import { projectLocation } from './paths'
 import { FileTree, type TreeClipboard } from './FileTree'
@@ -19,6 +19,7 @@ type Props = {
   clipboard: TreeClipboard | null
   onClipboardChange(clipboard: TreeClipboard | null): void
   onTransferPath(project: Project, from: string, toDir: string, mode: TransferMode): Promise<string | null>
+  onMovePaths(project: Project, paths: string[], toDir: string): Promise<PathMove[]>
   onDeletePath(project: Project, path: string): Promise<boolean>
   activePath: string | null
 }
@@ -104,6 +105,7 @@ export function Sidebar(props: Props): React.JSX.Element {
               clipboard={props.clipboard}
               onClipboardChange={props.onClipboardChange}
               onTransferPath={(from, toDir, mode) => props.onTransferPath(project, from, toDir, mode)}
+              onMovePaths={(paths, toDir) => props.onMovePaths(project, paths, toDir)}
               onDeletePath={(path) => props.onDeletePath(project, path)}
             />
           )}

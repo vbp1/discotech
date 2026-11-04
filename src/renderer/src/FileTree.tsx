@@ -1,8 +1,8 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, FolderTree, Route, Scissors, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, FolderPlus, FolderTree, Route, Scissors, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import type { DirEntry, Project, TransferMode } from '../../shared/api'
+import type { DirEntry, PathMove, Project, TransferMode } from '../../shared/api'
 import { errorText } from './errors'
 import { parentDir, relativeTo, rootPrefix } from './paths'
 
@@ -11,7 +11,7 @@ const RELOAD_DELAY_MS = 150
 const DRAG_EXPAND_HOLD_MS = 1500
 // Dragging this close to the top or bottom edge scrolls the tree.
 const DRAG_EDGE_ZONE_PX = 48
-const DRAG_MIME = 'application/x-discotech-path'
+const DRAG_MIME = 'application/x-discotech-paths'
 
 /** A file or folder marked with Copy (mode copy) or Cut (mode move), waiting for Paste. */
 export type TreeClipboard = { projectId: string; path: string; mode: TransferMode }
@@ -32,28 +32,32 @@ type Props = {
   clipboard: TreeClipboard | null
   onClipboardChange(clipboard: TreeClipboard | null): void
   onTransferPath(from: string, toDir: string, mode: TransferMode): Promise<string | null>
+  onMovePaths(paths: string[], toDir: string): Promise<PathMove[]>
   onDeletePath(path: string): Promise<boolean>
 }
 
 export function FileTree(props: Props): React.JSX.Element {
-  const { project, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPath, onDeletePath } = props
+  const { project, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPath, onMovePaths, onDeletePath } = props
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
   const pendingReloads = useRef<Map<string, number>>(new Map())
 
-  const loadDir = useCallback(
-    async (path: string): Promise<void> => {
-      let state: DirState
-      try {
-        state = { entries: await window.discotech.listDir(project, path) }
-      } catch (e) {
-        state = { error: errorText(e) }
-      }
-      setDirs((prev) => new Map(prev).set(path, state))
+  const moving = useRef(false)
+  const loadDirs = useCallback(
+    async (paths: string[]): Promise<void> => {
+      const states = await Promise.all(paths.map(async (path): Promise<[string, DirState]> => {
+        try {
+          return [path, { entries: await window.discotech.listDir(project, path) }]
+        } catch (e) {
+          return [path, { error: errorText(e) }]
+        }
+      }))
+      setDirs((prev) => new Map([...prev, ...states]))
     },
     [project]
   )
+  const loadDir = useCallback((path: string) => loadDirs([path]), [loadDirs])
 
   useEffect(() => {
     void loadDir(project.rootPath)
@@ -65,7 +69,7 @@ export function FileTree(props: Props): React.JSX.Element {
   useEffect(() => {
     const timers = pendingReloads.current
     const unsubscribe = window.discotech.onFsEvent((event) => {
-      if (event.projectId !== project.id || event.type === 'modify') return
+      if (moving.current || event.projectId !== project.id || event.type === 'modify') return
       const dir = parentDir(event.path)
       if (!dirsRef.current.has(dir) || timers.has(dir)) return
       timers.set(
@@ -207,11 +211,44 @@ export function FileTree(props: Props): React.JSX.Element {
     if (!isOwnDrag(e)) return
     e.preventDefault()
     e.stopPropagation()
-    const from = e.dataTransfer.getData(DRAG_MIME)
+    const data = e.dataTransfer.getData(DRAG_MIME)
     endDrag()
-    // Dropping back into the same folder, or a folder into itself, is no move.
-    if (!from || parentDir(from) === targetDir || targetDir === from || targetDir.startsWith(from + '/')) return
-    await transfer(from, targetDir, 'move')
+    let paths: unknown
+    try {
+      paths = JSON.parse(data)
+    } catch {
+      toast.error('Не удалось прочитать список перетаскиваемых файлов.')
+      return
+    }
+    if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== 'string' || !p.startsWith(rootPrefix(project.rootPath)))) {
+      toast.error('Некорректный список перетаскиваемых файлов.')
+      return
+    }
+    const sources = [...new Set(paths as string[])]
+    if (sources.some((p) => targetDir === p || targetDir.startsWith(p + '/'))) {
+      toast.error('Нельзя перенести папку в саму себя или во вложенную папку.')
+      return
+    }
+    // A selected folder carries its selected descendants with it.
+    const moves = sources.filter((p) => parentDir(p) !== targetDir && !sources.some((ancestor) => p.startsWith(ancestor + '/')))
+    if (moves.length === 0 || moving.current) return
+    moving.current = true
+    pendingReloads.current.forEach((timer) => window.clearTimeout(timer))
+    pendingReloads.current.clear()
+    try {
+      const completed = await onMovePaths(moves, targetDir)
+      const follow = (p: string): string => {
+        const move = completed.find((m) => p === m.from || p.startsWith(m.from + '/'))
+        return move ? move.to + p.slice(move.from.length) : p
+      }
+      const reopened = [...expanded].filter((p) => follow(p) !== p).map(follow)
+      setExpanded((prev) => new Set([...prev].map(follow)))
+      setSelection((prev) => new Set([...prev].map(follow)))
+      if (selectionAnchor.current) selectionAnchor.current = follow(selectionAnchor.current)
+      await loadDirs([...new Set([targetDir, ...moves.map(parentDir), ...reopened])])
+    } finally {
+      moving.current = false
+    }
   }
 
   /** Moves or copies, then refreshes the listed folders it touched and selects the result. */
@@ -226,7 +263,12 @@ export function FileTree(props: Props): React.JSX.Element {
       (d) => d === targetDir || d === to || d.startsWith(to + '/') || (mode === 'move' && d === parentDir(from))
     )
     new Set([...touched, ...reopened]).forEach((d) => void loadDir(d))
-    setSelected(to)
+    if (mode === 'move') {
+      setSelection((prev) => new Set([...prev].map((p) => p === from || p.startsWith(from + '/') ? to + p.slice(from.length) : p)))
+      if (selectionAnchor.current === from || selectionAnchor.current?.startsWith(from + '/')) {
+        selectionAnchor.current = to + selectionAnchor.current.slice(from.length)
+      }
+    } else setSelected(to)
     return to
   }
 
@@ -241,8 +283,39 @@ export function FileTree(props: Props): React.JSX.Element {
   }
 
   // Selection, clipboard and the actions of the toolbar, the context menu and the keyboard.
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selection, setSelection] = useState<Set<string>>(new Set())
+  const selectionAnchor = useRef<string | null>(null)
+  // Clipboard and delete actions continue to operate on a single item.
+  const selected = selection.size === 1 ? selection.values().next().value! : null
+  const setSelected = (path: string | null): void => {
+    setSelection(new Set(path ? [path] : []))
+    selectionAnchor.current = path
+  }
+  const selectRow = (e: React.MouseEvent, path: string): void => {
+    const additive = e.ctrlKey || e.metaKey
+    if (e.shiftKey && selectionAnchor.current) {
+      const start = rows.findIndex((r) => r.kind === 'entry' && r.entry.path === selectionAnchor.current)
+      const end = rows.findIndex((r) => r.kind === 'entry' && r.entry.path === path)
+      if (start >= 0 && end >= 0) {
+        const range = rows.slice(Math.min(start, end), Math.max(start, end) + 1)
+          .flatMap((r) => r.kind === 'entry' ? [r.entry.path] : [])
+        setSelection((prev) => new Set([...(additive ? prev : []), ...range]))
+        return
+      }
+    }
+    if (additive) {
+      setSelection((prev) => {
+        const next = new Set(prev)
+        if (next.has(path)) next.delete(path)
+        else next.add(path)
+        return next
+      })
+      selectionAnchor.current = path
+    } else setSelected(path)
+  }
   const [menu, setMenu] = useState<Menu | null>(null)
+  const [newFolder, setNewFolder] = useState<{ parent: string; name: string; error: string | null } | null>(null)
+  const [creating, setCreating] = useState(false)
   const ownClipboard = clipboard?.projectId === project.id ? clipboard : null
 
   const pasteDirFor = (path: string | null): string => {
@@ -254,6 +327,23 @@ export function FileTree(props: Props): React.JSX.Element {
     const state = dirs.get(parentDir(path))
     return state && 'entries' in state ? state.entries.find((e) => e.path === path) : undefined
   }
+
+  const createFolder = async (): Promise<void> => {
+    if (!newFolder || creating) return
+    setCreating(true)
+    try {
+      const path = await window.discotech.createDir(project, newFolder.parent, newFolder.name)
+      setExpanded((prev) => new Set(prev).add(newFolder.parent))
+      await loadDir(newFolder.parent)
+      setSelected(path)
+      setNewFolder(null)
+    } catch (e) {
+      setNewFolder((prev) => prev && { ...prev, error: errorText(e) })
+    } finally {
+      setCreating(false)
+    }
+  }
+  const askFolder = (path: string | null): void => setNewFolder({ parent: pasteDirFor(path), name: '', error: null })
 
   const copy = (path: string | null, mode: TransferMode): void => {
     if (path) onClipboardChange({ projectId: project.id, path, mode })
@@ -351,6 +441,7 @@ export function FileTree(props: Props): React.JSX.Element {
   return (
     <div className="tree-pane">
       <div className="tree-toolbar">
+        {toolbarButton('Создать папку', <FolderPlus size={15} />, selection.size > 1, () => askFolder(selected))}
         {toolbarButton('Копировать (Ctrl+C)', <Copy size={15} />, !selected, () => copy(selected, 'copy'))}
         {toolbarButton('Вырезать (Ctrl+X)', <Scissors size={15} />, !selected, () => copy(selected, 'move'))}
         {toolbarButton(
@@ -365,6 +456,9 @@ export function FileTree(props: Props): React.JSX.Element {
         className={`tree${highlightDir === project.rootPath ? ' tree-drop' : ''}`}
         ref={scrollRef}
         style={{ fontSize }}
+        role="tree"
+        aria-label="Файлы проекта"
+        aria-multiselectable
         tabIndex={0}
         onKeyDown={onTreeKey}
         onClick={(e) => {
@@ -406,7 +500,11 @@ export function FileTree(props: Props): React.JSX.Element {
             return (
               <div
                 key={entry.path}
-                className={`tree-row${entry.path === activePath ? ' tree-row-active' : ''}${entry.path === selected ? ' tree-row-selected' : ''}${rowDropDir === highlightDir ? ' tree-row-drop' : ''}${ownClipboard?.mode === 'move' && ownClipboard.path === entry.path ? ' tree-row-cut' : ''}`}
+                className={`tree-row${entry.path === activePath ? ' tree-row-active' : ''}${selection.has(entry.path) ? ' tree-row-selected' : ''}${rowDropDir === highlightDir ? ' tree-row-drop' : ''}${ownClipboard?.mode === 'move' && ownClipboard.path === entry.path ? ' tree-row-cut' : ''}`}
+                aria-selected={selection.has(entry.path)}
+                role="treeitem"
+                aria-level={row.depth + 1}
+                aria-expanded={entry.isDir ? isOpen : undefined}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
@@ -415,7 +513,10 @@ export function FileTree(props: Props): React.JSX.Element {
                 }}
                 draggable
                 onDragStart={(e) => {
-                  e.dataTransfer.setData(DRAG_MIME, entry.path)
+                  if (moving.current) { e.preventDefault(); return }
+                  const paths = selection.has(entry.path) ? [...selection] : [entry.path]
+                  if (!selection.has(entry.path)) setSelected(entry.path)
+                  e.dataTransfer.setData(DRAG_MIME, JSON.stringify(paths))
                   e.dataTransfer.effectAllowed = 'move'
                   setDragSource(entry.path)
                 }}
@@ -424,8 +525,9 @@ export function FileTree(props: Props): React.JSX.Element {
                 onDrop={(e) => void dropOn(e, rowDropDir)}
                 style={style}
                 title={entry.linkError ? `Ссылка никуда не ведёт: ${entry.linkError}` : entry.path}
-                onClick={() => {
-                  setSelected(entry.path)
+                onClick={(e) => {
+                  selectRow(e, entry.path)
+                  if (e.ctrlKey || e.metaKey || e.shiftKey) return
                   if (entry.isDir) toggleDir(entry.path)
                   else onOpenFile(entry.path)
                 }}
@@ -455,6 +557,8 @@ export function FileTree(props: Props): React.JSX.Element {
       </div>
       {menu && (
         <div className="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
+          {menuItem('Создать папку', '', <FolderPlus size={14} />, false, () => askFolder(menu.path))}
+          <div className="menu-separator" />
           {menuItem('Копировать', 'Ctrl+C', <Copy size={14} />, menu.path === null, () => copy(menu.path, 'copy'))}
           {menuItem('Вырезать', 'Ctrl+X', <Scissors size={14} />, menu.path === null, () => copy(menu.path, 'move'))}
           {menuItem('Вставить', 'Ctrl+V', <ClipboardPaste size={14} />, !ownClipboard, () => void paste(menu.path))}
@@ -465,6 +569,43 @@ export function FileTree(props: Props): React.JSX.Element {
           )}
           <div className="menu-separator" />
           {menuItem('Удалить', 'Delete', <Trash2 size={14} />, menu.path === null, () => void remove(menu.path))}
+        </div>
+      )}
+      {newFolder && (
+        <div className="dialog-overlay" onPointerDown={(e) => {
+          if (e.target === e.currentTarget && !creating) setNewFolder(null)
+        }}>
+          <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="folder-title"
+            onSubmit={(e) => { e.preventDefault(); void createFolder() }}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Escape' && !creating) setNewFolder(null)
+              if (e.key === 'Tab') {
+                const controls = [...e.currentTarget.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)')]
+                const index = controls.indexOf(document.activeElement as HTMLElement)
+                if (index === (e.shiftKey ? 0 : controls.length - 1)) {
+                  e.preventDefault()
+                  controls[e.shiftKey ? controls.length - 1 : 0]?.focus()
+                }
+              }
+            }}>
+            <div className="dialog-header">
+              <h2 id="folder-title" className="dialog-title">Создать папку</h2>
+              <p className="dialog-description">В папке: {newFolder.parent}</p>
+              <label className="search-input">
+                <FolderPlus size={16} />
+                <input autoFocus aria-label="Имя папки" placeholder="Имя папки" value={newFolder.name} disabled={creating}
+                  onChange={(e) => setNewFolder({ ...newFolder, name: e.target.value, error: null })} />
+              </label>
+              {newFolder.error && <p className="dialog-description" role="alert">{newFolder.error}</p>}
+            </div>
+            <div className="dialog-footer">
+              <button type="button" className="btn btn-outline" disabled={creating} onClick={() => setNewFolder(null)}>Отмена</button>
+              <button type="submit" className="btn btn-primary" disabled={creating || newFolder.name.length === 0}>
+                {creating ? 'Создание…' : 'Создать'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

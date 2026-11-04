@@ -1,6 +1,6 @@
 import { FolderInput, Replace, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
+import type { PathMove, Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
 import type { TreeClipboard } from './FileTree'
 import { baseName, projectLocation } from './paths'
 import { toast } from 'sonner'
@@ -246,11 +246,37 @@ export function App(): React.JSX.Element {
         result = await window.discotech.transferPath(target, from, toDir, mode, true)
         if (result.status === 'exists') throw new Error(`${result.to} still exists after overwrite was confirmed.`)
       }
-      if (mode === 'move') setPathNotice({ kind: 'moved', projectId: target.id, from, to: result.to, nonce: Date.now() })
+      if (mode === 'move') setPathNotice({ kind: 'moved', projectId: target.id, moves: [{ from, to: result.to }], nonce: Date.now() })
       return result.to
     } catch (e) {
       toast.error(`Не ${verb}: ${errorText(e)}`)
       return null
+    }
+  }
+
+  const movePaths = async (target: Project, paths: string[], toDir: string): Promise<PathMove[]> => {
+    const affected = paths.flatMap((p) => [...unsavedUnder(target, p), ...unsavedUnder(target, toDir.replace(/\/$/, '') + '/' + baseName(p))])
+    if (refuseUnsaved('перенесено', [...new Set(affected)])) return []
+    try {
+      let result = await window.discotech.movePaths(target, paths, toDir, false)
+      if (result.status === 'exists') {
+        const ok = await confirmDialog({
+          title: 'Заменить совпадающие имена?',
+          description: result.conflicts.map((c) => `«${baseName(c.to)}»${c.isDir ? ' (папки будут слиты, совпадающие файлы заменены)' : ''}`).join(', '),
+          confirmLabel: 'Заменить и перенести всё',
+          destructive: true,
+          icon: <Replace size={20} />
+        })
+        if (!ok) return []
+        result = await window.discotech.movePaths(target, paths, toDir, true)
+        if (result.status === 'exists') throw new Error('Conflicts remain after confirmation.')
+      }
+      if (result.moves.length > 0) setPathNotice({ kind: 'moved', projectId: target.id, moves: result.moves, nonce: Date.now() })
+      if (result.status === 'failed') toast.error(`Перенесено ${result.moves.length} из ${paths.length}.`, { description: result.error })
+      return result.moves
+    } catch (e) {
+      toast.error(`Не удалось перенести файлы: ${errorText(e)}`)
+      return []
     }
   }
 
@@ -334,6 +360,7 @@ export function App(): React.JSX.Element {
           clipboard={clipboard}
           onClipboardChange={setClipboard}
           onTransferPath={transferPath}
+          onMovePaths={movePaths}
           onDeletePath={deletePath}
           activePath={revealPath}
         />

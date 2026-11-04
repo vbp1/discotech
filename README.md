@@ -12,9 +12,10 @@ and a viewer, plus your Claude and Codex usage limits in the status bar. Styled 
   which become projects in the default distro through its `/mnt` mount; the last open project and
   its tabs come back after a restart.
 - **File tree** — lazy, virtualized, follows symlinks (resolved inside WSL), live updates via
-  `inotifywait`. Drag and drop to move, a 1.5 s hover opens a folder; copy, cut, paste and delete
-  from the context menu, the toolbar or `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Delete`. A taken name asks
-  before replacing a file or merging a folder.
+  `inotifywait`. Select multiple items with `Ctrl+click` or a range with `Shift+click`, then drag
+  any selected item to move the group. A 1.5 s hover opens a folder. Copy, cut, paste and delete
+  for a single item from the context menu, the toolbar or `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Delete`. A taken name asks
+  before replacing a file or merging a folder. Create folders from the toolbar or context menu.
 - **Search** — by file name or content, with ripgrep running inside WSL. Files ignored by git are
   searched too; dependency, cache and working-copy folders are skipped.
 - **Editor** — Monaco for code. Markdown opens in a visual editor (Tiptap) that saves only what you
