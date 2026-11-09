@@ -61,6 +61,21 @@ export function EditorArea(props: Props): React.JSX.Element {
   }, [visible, activePath, onActivePathChange])
 
   useEffect(() => onDirtyPathsChange(project.id, dirty), [project.id, dirty, onDirtyPathsChange])
+  // The area goes away with its project; its reported edits went with it.
+  useEffect(() => () => onDirtyPathsChange(project.id, new Set()), [project.id, onDirtyPathsChange])
+
+  // A mark without its tab can never be cleared: a tab disappears without a final report when
+  // a moved file renames its tab or a preview tab is replaced. Keep marks on live tabs only.
+  useEffect(() => {
+    setDirty((prev) => {
+      const next = new Set([...prev].filter((p) => tabs.some((t) => t.path === p)))
+      return next.size === prev.size ? prev : next
+    })
+    setDeleted((prev) => {
+      const next = new Set([...prev].filter((p) => tabs.some((t) => t.path === p)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [tabs])
 
   useEffect(() => {
     if (!pathNotice) return
