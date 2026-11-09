@@ -2,7 +2,7 @@ import { FolderInput, Replace, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PathMove, Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
 import type { TreeClipboard } from './FileTree'
-import { baseName, projectLocation } from './paths'
+import { baseName, itemsWord, projectLocation } from './paths'
 import { toast } from 'sonner'
 import { EditorArea, type OpenRequest, type PathNotice } from './EditorArea'
 import { Toaster } from './Toaster'
@@ -214,91 +214,96 @@ export function App(): React.JSX.Element {
   }
 
   /**
-   * Moves or copies a file or folder from the tree; open tabs follow a move. A taken name asks
-   * whether to replace it (a folder merges). Returns the new path, or null when nothing changed.
+   * Moves or copies the whole group from the tree; open tabs follow a move. Taken names are
+   * confirmed once for the group before anything changes (a folder merges). Returns the completed
+   * moves; empty when nothing changed.
    */
-  const transferPath = async (target: Project, from: string, toDir: string, mode: TransferMode): Promise<string | null> => {
+  const transferPaths = async (target: Project, paths: string[], toDir: string, mode: TransferMode): Promise<PathMove[]> => {
     const verb = mode === 'move' ? 'перенесено' : 'скопировано'
-    if (mode === 'move' && refuseUnsaved(verb, unsavedUnder(target, from))) return null
+    const destinations = paths.map((p) => toDir.replace(/\/$/, '') + '/' + baseName(p))
+    const affected = paths.flatMap((p, i) => [...(mode === 'move' ? unsavedUnder(target, p) : []), ...unsavedUnder(target, destinations[i])])
+    if (refuseUnsaved(verb, [...new Set(affected)])) return []
     try {
-      let result = await window.discotech.transferPath(target, from, toDir, mode, false)
+      let result = await window.discotech.transferPaths(target, paths, toDir, mode, false)
       if (result.status === 'exists') {
-        const name = baseName(result.to)
         const where = baseName(toDir) || toDir
         const ok = await confirmDialog(
-          result.isDir
+          result.conflicts.length === 1 && !result.conflicts[0].isDir
             ? {
-                title: `Слить папки «${name}»?`,
-                description: `Папка «${name}» уже есть в «${where}». Содержимое сложится вместе, файлы с совпадающими именами заменятся.`,
-                confirmLabel: 'Слить',
-                icon: <FolderInput size={20} />
-              }
-            : {
-                title: `Заменить «${name}»?`,
-                description: `Файл «${name}» уже есть в «${where}». Он будет заменён.`,
+                title: `Заменить «${baseName(result.conflicts[0].to)}»?`,
+                description: `Файл «${baseName(result.conflicts[0].to)}» уже есть в «${where}». Он будет заменён.`,
                 confirmLabel: 'Заменить',
                 destructive: true,
                 icon: <Replace size={20} />
               }
+            : result.conflicts.length === 1
+              ? {
+                  title: `Слить папки «${baseName(result.conflicts[0].to)}»?`,
+                  description: `Папка «${baseName(result.conflicts[0].to)}» уже есть в «${where}». Содержимое сложится вместе, файлы с совпадающими именами заменятся.`,
+                  confirmLabel: 'Слить',
+                  icon: <FolderInput size={20} />
+                }
+              : {
+                  title: 'Заменить совпадающие имена?',
+                  description: result.conflicts
+                    .map((c) => `«${baseName(c.to)}»${c.isDir ? ' (папки будут слиты, совпадающие файлы заменены)' : ''}`)
+                    .join(', '),
+                  confirmLabel: 'Заменить и продолжить',
+                  destructive: true,
+                  icon: <Replace size={20} />
+                }
         )
-        if (!ok) return null
-        if (refuseUnsaved(verb, unsavedUnder(target, result.to))) return null
-        result = await window.discotech.transferPath(target, from, toDir, mode, true)
-        if (result.status === 'exists') throw new Error(`${result.to} still exists after overwrite was confirmed.`)
-      }
-      if (mode === 'move') setPathNotice({ kind: 'moved', projectId: target.id, moves: [{ from, to: result.to }], nonce: Date.now() })
-      return result.to
-    } catch (e) {
-      toast.error(`Не ${verb}: ${errorText(e)}`)
-      return null
-    }
-  }
-
-  const movePaths = async (target: Project, paths: string[], toDir: string): Promise<PathMove[]> => {
-    const affected = paths.flatMap((p) => [...unsavedUnder(target, p), ...unsavedUnder(target, toDir.replace(/\/$/, '') + '/' + baseName(p))])
-    if (refuseUnsaved('перенесено', [...new Set(affected)])) return []
-    try {
-      let result = await window.discotech.movePaths(target, paths, toDir, false)
-      if (result.status === 'exists') {
-        const ok = await confirmDialog({
-          title: 'Заменить совпадающие имена?',
-          description: result.conflicts.map((c) => `«${baseName(c.to)}»${c.isDir ? ' (папки будут слиты, совпадающие файлы заменены)' : ''}`).join(', '),
-          confirmLabel: 'Заменить и перенести всё',
-          destructive: true,
-          icon: <Replace size={20} />
-        })
         if (!ok) return []
-        result = await window.discotech.movePaths(target, paths, toDir, true)
+        result = await window.discotech.transferPaths(target, paths, toDir, mode, true)
         if (result.status === 'exists') throw new Error('Conflicts remain after confirmation.')
       }
-      if (result.moves.length > 0) setPathNotice({ kind: 'moved', projectId: target.id, moves: result.moves, nonce: Date.now() })
-      if (result.status === 'failed') toast.error(`Перенесено ${result.moves.length} из ${paths.length}.`, { description: result.error })
+      if (mode === 'move' && result.moves.length > 0) setPathNotice({ kind: 'moved', projectId: target.id, moves: result.moves, nonce: Date.now() })
+      if (result.status === 'failed') {
+        toast.error(`${mode === 'move' ? 'Перенесено' : 'Скопировано'} ${result.moves.length} из ${paths.length}.`, { description: result.error })
+      }
       return result.moves
     } catch (e) {
-      toast.error(`Не удалось перенести файлы: ${errorText(e)}`)
+      toast.error(`Не ${verb}: ${errorText(e)}`)
       return []
     }
   }
 
-  const deletePath = async (target: Project, path: string): Promise<boolean> => {
-    if (refuseUnsaved('удалено', unsavedUnder(target, path))) return false
+  /** Deletes the whole group after one confirmation; reports a partial failure honestly. */
+  const deletePaths = async (target: Project, paths: string[]): Promise<boolean> => {
+    if (paths.length === 0) return false
+    if (refuseUnsaved('удалено', paths.flatMap((p) => unsavedUnder(target, p)))) return false
+    const names = paths.map((p) => `«${baseName(p)}»`)
+    const shown = names.length <= 5 ? names.join(', ') : `${names.slice(0, 5).join(', ')} и ещё ${names.length - 5}`
     const ok = await confirmDialog({
-      title: `Удалить «${baseName(path)}» насовсем?`,
-      description: 'Корзины для файлов WSL нет: вернуть будет нельзя.',
+      title: paths.length === 1 ? `Удалить ${names[0]} насовсем?` : `Удалить ${paths.length} ${itemsWord(paths.length)} насовсем?`,
+      description: `${paths.length > 1 ? `${shown}. ` : ''}Корзины для файлов WSL нет: вернуть будет нельзя.`,
       confirmLabel: 'Удалить',
       destructive: true,
       icon: <Trash2 size={20} />
     })
     if (!ok) return false
-    try {
-      await window.discotech.deletePath(target, path)
-      setPathNotice({ kind: 'deleted', projectId: target.id, path, nonce: Date.now() })
-      setClipboard((prev) => (prev && (prev.path === path || prev.path.startsWith(path + '/')) ? null : prev))
-      return true
-    } catch (e) {
-      toast.error(`Не удалено: ${errorText(e)}`)
-      return false
+    const deleted: string[] = []
+    let failure: unknown = null
+    for (const path of paths) {
+      try {
+        await window.discotech.deletePath(target, path)
+        deleted.push(path)
+      } catch (e) {
+        failure ??= e
+      }
     }
+    if (deleted.length > 0) {
+      setPathNotice({ kind: 'deleted', projectId: target.id, paths: deleted, nonce: Date.now() })
+      setClipboard((prev) => {
+        if (!prev) return prev
+        const rest = prev.paths.filter((p) => !deleted.some((d) => p === d || p.startsWith(d + '/')))
+        return rest.length === prev.paths.length ? prev : rest.length > 0 ? { ...prev, paths: rest } : null
+      })
+    }
+    if (failure !== null) {
+      toast.error(`Удалено ${deleted.length} из ${paths.length}.`, { description: errorText(failure) })
+    }
+    return deleted.length > 0
   }
 
   // Closing the window while edits are unsaved is cancelled and asked about here.
@@ -359,9 +364,8 @@ export function App(): React.JSX.Element {
           onOpenFile={openFile}
           clipboard={clipboard}
           onClipboardChange={setClipboard}
-          onTransferPath={transferPath}
-          onMovePaths={movePaths}
-          onDeletePath={deletePath}
+          onTransferPaths={transferPaths}
+          onDeletePaths={deletePaths}
           activePath={revealPath}
         />
         <div className="splitter" onPointerDown={startResize} onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)} />

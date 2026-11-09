@@ -25,3 +25,9 @@ export function rootPrefix(root: string): string {
 export function projectLocation(project: Project): string {
   return project.distro === null ? project.rootPath : `${project.distro}: ${project.rootPath}`
 }
+
+/** Russian plural for counting items: 1 элемент, 3 элемента, 5 элементов. */
+export function itemsWord(count: number): string {
+  if (count % 10 === 1 && count % 100 !== 11) return 'элемент'
+  return count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'элемента' : 'элементов'
+}

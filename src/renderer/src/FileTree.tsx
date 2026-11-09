@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { DirEntry, PathMove, Project, TransferMode } from '../../shared/api'
 import { errorText } from './errors'
-import { parentDir, relativeTo, rootPrefix } from './paths'
+import { baseName, itemsWord, parentDir, relativeTo, rootPrefix } from './paths'
 
 const RELOAD_DELAY_MS = 150
 // A dragged item held over a closed folder this long opens it, to drop into a subfolder.
@@ -13,8 +13,8 @@ const DRAG_EXPAND_HOLD_MS = 1500
 const DRAG_EDGE_ZONE_PX = 48
 const DRAG_MIME = 'application/x-discotech-paths'
 
-/** A file or folder marked with Copy (mode copy) or Cut (mode move), waiting for Paste. */
-export type TreeClipboard = { projectId: string; path: string; mode: TransferMode }
+/** Files and folders marked with Copy (mode copy) or Cut (mode move), waiting for Paste. */
+export type TreeClipboard = { projectId: string; paths: string[]; mode: TransferMode }
 
 type Menu = { x: number; y: number; path: string | null }
 
@@ -31,13 +31,12 @@ type Props = {
   onOpenFile(path: string): void
   clipboard: TreeClipboard | null
   onClipboardChange(clipboard: TreeClipboard | null): void
-  onTransferPath(from: string, toDir: string, mode: TransferMode): Promise<string | null>
-  onMovePaths(paths: string[], toDir: string): Promise<PathMove[]>
-  onDeletePath(path: string): Promise<boolean>
+  onTransferPaths(paths: string[], toDir: string, mode: TransferMode): Promise<PathMove[]>
+  onDeletePaths(paths: string[]): Promise<boolean>
 }
 
 export function FileTree(props: Props): React.JSX.Element {
-  const { project, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPath, onMovePaths, onDeletePath } = props
+  const { project, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPaths, onDeletePaths } = props
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -231,61 +230,52 @@ export function FileTree(props: Props): React.JSX.Element {
     }
     // A selected folder carries its selected descendants with it.
     const moves = sources.filter((p) => parentDir(p) !== targetDir && !sources.some((ancestor) => p.startsWith(ancestor + '/')))
-    if (moves.length === 0 || moving.current) return
+    await transferGroup(moves, targetDir, 'move')
+  }
+
+  /**
+   * Moves or copies the whole group in one operation, then refreshes the listed folders it
+   * touched and selects the results. Open folders and the selection follow a move.
+   */
+  const transferGroup = async (paths: string[], targetDir: string, mode: TransferMode): Promise<PathMove[]> => {
+    if (paths.length === 0 || moving.current) return []
     moving.current = true
     pendingReloads.current.forEach((timer) => window.clearTimeout(timer))
     pendingReloads.current.clear()
     try {
-      const completed = await onMovePaths(moves, targetDir)
+      const completed = await onTransferPaths(paths, targetDir, mode)
       const follow = (p: string): string => {
         const move = completed.find((m) => p === m.from || p.startsWith(m.from + '/'))
         return move ? move.to + p.slice(move.from.length) : p
       }
-      const reopened = [...expanded].filter((p) => follow(p) !== p).map(follow)
-      setExpanded((prev) => new Set([...prev].map(follow)))
-      setSelection((prev) => new Set([...prev].map(follow)))
-      if (selectionAnchor.current) selectionAnchor.current = follow(selectionAnchor.current)
-      await loadDirs([...new Set([targetDir, ...moves.map(parentDir), ...reopened])])
+      // Open folders that moved stay open at the new place, so their listings load there.
+      const reopened = mode === 'move' ? [...expanded].filter((p) => follow(p) !== p).map(follow) : []
+      if (mode === 'move') {
+        setExpanded((prev) => new Set([...prev].map(follow)))
+        setSelection((prev) => new Set([...prev].map(follow)))
+        if (selectionAnchor.current) selectionAnchor.current = follow(selectionAnchor.current)
+      } else if (completed.length > 0) {
+        setSelection(new Set(completed.map((m) => m.to)))
+        selectionAnchor.current = completed[completed.length - 1].to
+      }
+      // Listed folders under a destination change when a merge replaces its contents.
+      const underDestination = (d: string): boolean => completed.some((m) => d === m.to || d.startsWith(m.to + '/'))
+      const touched = [...new Set([
+        targetDir,
+        ...completed.map((m) => parentDir(m.from)),
+        ...reopened,
+        ...[...dirsRef.current.keys()].filter(underDestination)
+      ])]
+      await loadDirs(touched)
+      return completed
     } finally {
       moving.current = false
     }
   }
 
-  /** Moves or copies, then refreshes the listed folders it touched and selects the result. */
-  const transfer = async (from: string, targetDir: string, mode: TransferMode): Promise<string | null> => {
-    const to = await onTransferPath(from, targetDir, mode)
-    if (to === null) return null
-    // Open folders that moved stay open at the new place, so their listings load there.
-    const reopened =
-      mode === 'move' ? [...expanded].filter((p) => p === from || p.startsWith(from + '/')).map((p) => to + p.slice(from.length)) : []
-    if (mode === 'move') renameExpanded(from, to)
-    const touched = [...dirsRef.current.keys()].filter(
-      (d) => d === targetDir || d === to || d.startsWith(to + '/') || (mode === 'move' && d === parentDir(from))
-    )
-    new Set([...touched, ...reopened]).forEach((d) => void loadDir(d))
-    if (mode === 'move') {
-      setSelection((prev) => new Set([...prev].map((p) => p === from || p.startsWith(from + '/') ? to + p.slice(from.length) : p)))
-      if (selectionAnchor.current === from || selectionAnchor.current?.startsWith(from + '/')) {
-        selectionAnchor.current = to + selectionAnchor.current.slice(from.length)
-      }
-    } else setSelected(to)
-    return to
-  }
-
-  const renameExpanded = (from: string, to: string): void => {
-    setExpanded((prev) => {
-      const moved = [...prev].filter((p) => p === from || p.startsWith(from + '/'))
-      if (moved.length === 0) return prev
-      const next = new Set([...prev].filter((p) => !moved.includes(p)))
-      moved.forEach((p) => next.add(to + p.slice(from.length)))
-      return next
-    })
-  }
-
   // Selection, clipboard and the actions of the toolbar, the context menu and the keyboard.
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const selectionAnchor = useRef<string | null>(null)
-  // Clipboard and delete actions continue to operate on a single item.
   const selected = selection.size === 1 ? selection.values().next().value! : null
   const setSelected = (path: string | null): void => {
     setSelection(new Set(path ? [path] : []))
@@ -317,6 +307,8 @@ export function FileTree(props: Props): React.JSX.Element {
   const [newFolder, setNewFolder] = useState<{ parent: string; name: string; error: string | null } | null>(null)
   const [creating, setCreating] = useState(false)
   const ownClipboard = clipboard?.projectId === project.id ? clipboard : null
+  const pasteTitle = (c: TreeClipboard): string =>
+    c.paths.length === 1 ? `«${baseName(c.paths[0])}»` : `${c.paths.length} ${itemsWord(c.paths.length)}`
 
   const pasteDirFor = (path: string | null): string => {
     if (path === null) return project.rootPath
@@ -345,8 +337,12 @@ export function FileTree(props: Props): React.JSX.Element {
   }
   const askFolder = (path: string | null): void => setNewFolder({ parent: pasteDirFor(path), name: '', error: null })
 
-  const copy = (path: string | null, mode: TransferMode): void => {
-    if (path) onClipboardChange({ projectId: project.id, path, mode })
+  /** The rows Copy/Cut take: a selected folder carries its selected descendants with it. */
+  const groupOf = (paths: string[]): string[] =>
+    [...new Set(paths)].filter((p) => !paths.some((ancestor) => p.startsWith(ancestor + '/')))
+  const copy = (paths: string[], mode: TransferMode): void => {
+    const group = groupOf(paths)
+    if (group.length > 0) onClipboardChange({ projectId: project.id, paths: group, mode })
   }
   const paste = async (path: string | null): Promise<void> => {
     if (!clipboard) return
@@ -354,19 +350,43 @@ export function FileTree(props: Props): React.JSX.Element {
       toast.error('Вставка между проектами не поддерживается: вставьте в тот же проект, где копировали.')
       return
     }
-    const to = await transfer(clipboard.path, pasteDirFor(path), clipboard.mode)
-    if (to !== null && clipboard.mode === 'move') onClipboardChange(null)
+    const completed = await transferGroup(groupOf(clipboard.paths), pasteDirFor(path), clipboard.mode)
+    if (completed.length > 0) {
+      setSelection(new Set(completed.map((m) => m.to)))
+      selectionAnchor.current = completed[completed.length - 1].to
+    }
+    // A cut group leaves the clipboard once pasted; items that stayed keep waiting for Paste.
+    if (clipboard.mode === 'move' && completed.length > 0) {
+      const movedFrom = new Set(completed.map((m) => m.from))
+      const rest = groupOf(clipboard.paths).filter((p) => !movedFrom.has(p))
+      onClipboardChange(rest.length > 0 ? { ...clipboard, paths: rest } : null)
+    }
   }
+  /** Where toolbar and keyboard Paste lands: into the only selected folder, beside the selection. */
+  const selectionTarget = (): string | null => {
+    if (selection.size <= 1) return selected
+    const parents = new Set([...selection].map(parentDir))
+    return parents.size === 1 ? [...parents][0] : null
+  }
+  /** Rows a context-menu action works on: the kept selection when it contains the clicked row. */
+  const menuActionPaths = (path: string | null): string[] =>
+    path === null ? [] : selection.has(path) ? [...selection] : [path]
   const copyPathText = (text: string): void => {
     navigator.clipboard.writeText(text).then(
       () => toast.success('Путь скопирован', { description: text }),
       (error: unknown) => toast.error(`Не удалось скопировать путь: ${error instanceof Error ? error.message : String(error)}`)
     )
   }
-  const remove = async (path: string | null): Promise<void> => {
-    if (!path || !(await onDeletePath(path))) return
-    if (dirsRef.current.has(parentDir(path))) void loadDir(parentDir(path))
-    if (selected !== null && (selected === path || selected.startsWith(path + '/'))) setSelected(null)
+  /** Deletes the group, then refreshes the folders that held it and clears the gone selection. */
+  const remove = async (paths: string[]): Promise<void> => {
+    if (paths.length === 0 || !(await onDeletePaths(paths))) return
+    await loadDirs([...new Set(paths.map(parentDir))].filter((d) => dirsRef.current.has(d)))
+    const gone = (p: string): boolean => paths.some((d) => p === d || p.startsWith(d + '/'))
+    setSelection((prev) => {
+      const next = new Set([...prev].filter((p) => !gone(p)))
+      return next.size === prev.size ? prev : next
+    })
+    if (selectionAnchor.current !== null && gone(selectionAnchor.current)) selectionAnchor.current = null
   }
 
   const onTreeKey = (e: React.KeyboardEvent): void => {
@@ -375,11 +395,11 @@ export function FileTree(props: Props): React.JSX.Element {
     const letter = e.code.startsWith('Key') ? e.code.slice(3) : String.fromCharCode(e.keyCode)
     if (e.ctrlKey && !e.altKey && !e.shiftKey && (letter === 'C' || letter === 'X' || letter === 'V')) {
       e.preventDefault()
-      if (letter === 'V') void paste(selected)
-      else copy(selected, letter === 'C' ? 'copy' : 'move')
+      if (letter === 'V') void paste(selectionTarget())
+      else if (selection.size > 0) copy([...selection], letter === 'C' ? 'copy' : 'move')
     } else if (e.key === 'Delete' && !e.ctrlKey && !e.altKey) {
       e.preventDefault()
-      void remove(selected)
+      void remove([...selection])
     }
   }
 
@@ -442,15 +462,15 @@ export function FileTree(props: Props): React.JSX.Element {
     <div className="tree-pane">
       <div className="tree-toolbar">
         {toolbarButton('Создать папку', <FolderPlus size={15} />, selection.size > 1, () => askFolder(selected))}
-        {toolbarButton('Копировать (Ctrl+C)', <Copy size={15} />, !selected, () => copy(selected, 'copy'))}
-        {toolbarButton('Вырезать (Ctrl+X)', <Scissors size={15} />, !selected, () => copy(selected, 'move'))}
+        {toolbarButton('Копировать (Ctrl+C)', <Copy size={15} />, selection.size === 0, () => copy([...selection], 'copy'))}
+        {toolbarButton('Вырезать (Ctrl+X)', <Scissors size={15} />, selection.size === 0, () => copy([...selection], 'move'))}
         {toolbarButton(
-          ownClipboard ? `Вставить «${ownClipboard.path.slice(ownClipboard.path.lastIndexOf('/') + 1)}» (Ctrl+V)` : 'Вставить (Ctrl+V)',
+          ownClipboard ? `Вставить ${pasteTitle(ownClipboard)} (Ctrl+V)` : 'Вставить (Ctrl+V)',
           <ClipboardPaste size={15} />,
           !ownClipboard,
-          () => void paste(selected)
+          () => void paste(selectionTarget())
         )}
-        {toolbarButton('Удалить (Delete)', <Trash2 size={15} />, !selected, () => void remove(selected))}
+        {toolbarButton('Удалить (Delete)', <Trash2 size={15} />, selection.size === 0, () => void remove([...selection]))}
       </div>
       <div
         className={`tree${highlightDir === project.rootPath ? ' tree-drop' : ''}`}
@@ -500,7 +520,7 @@ export function FileTree(props: Props): React.JSX.Element {
             return (
               <div
                 key={entry.path}
-                className={`tree-row${entry.path === activePath ? ' tree-row-active' : ''}${selection.has(entry.path) ? ' tree-row-selected' : ''}${rowDropDir === highlightDir ? ' tree-row-drop' : ''}${ownClipboard?.mode === 'move' && ownClipboard.path === entry.path ? ' tree-row-cut' : ''}`}
+                className={`tree-row${entry.path === activePath ? ' tree-row-active' : ''}${selection.has(entry.path) ? ' tree-row-selected' : ''}${rowDropDir === highlightDir ? ' tree-row-drop' : ''}${ownClipboard?.mode === 'move' && ownClipboard.paths.includes(entry.path) ? ' tree-row-cut' : ''}`}
                 aria-selected={selection.has(entry.path)}
                 role="treeitem"
                 aria-level={row.depth + 1}
@@ -508,7 +528,7 @@ export function FileTree(props: Props): React.JSX.Element {
                 onContextMenu={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  setSelected(entry.path)
+                  if (!selection.has(entry.path)) setSelected(entry.path)
                   setMenu({ x: e.clientX, y: e.clientY, path: entry.path })
                 }}
                 draggable
@@ -559,8 +579,8 @@ export function FileTree(props: Props): React.JSX.Element {
         <div className="menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
           {menuItem('Создать папку', '', <FolderPlus size={14} />, false, () => askFolder(menu.path))}
           <div className="menu-separator" />
-          {menuItem('Копировать', 'Ctrl+C', <Copy size={14} />, menu.path === null, () => copy(menu.path, 'copy'))}
-          {menuItem('Вырезать', 'Ctrl+X', <Scissors size={14} />, menu.path === null, () => copy(menu.path, 'move'))}
+          {menuItem('Копировать', 'Ctrl+C', <Copy size={14} />, menu.path === null, () => copy(menuActionPaths(menu.path), 'copy'))}
+          {menuItem('Вырезать', 'Ctrl+X', <Scissors size={14} />, menu.path === null, () => copy(menuActionPaths(menu.path), 'move'))}
           {menuItem('Вставить', 'Ctrl+V', <ClipboardPaste size={14} />, !ownClipboard, () => void paste(menu.path))}
           <div className="menu-separator" />
           {menuItem('Копировать путь', '', <Route size={14} />, menu.path === null, () => copyPathText(menu.path!))}
@@ -568,7 +588,7 @@ export function FileTree(props: Props): React.JSX.Element {
             copyPathText(relativeTo(project.rootPath, menu.path!))
           )}
           <div className="menu-separator" />
-          {menuItem('Удалить', 'Delete', <Trash2 size={14} />, menu.path === null, () => void remove(menu.path))}
+          {menuItem('Удалить', 'Delete', <Trash2 size={14} />, menu.path === null, () => void remove(menuActionPaths(menu.path)))}
         </div>
       )}
       {newFolder && (

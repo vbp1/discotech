@@ -65,13 +65,12 @@ export type DiscotechApi = {
   /** Creates a file that is not on disk, with any missing folders; a conflict when something is already there. */
   createFile(project: Project, projectPath: string, text: string): Promise<WriteResult>
   /**
-   * Moves or copies a file or folder into toDir. A taken name comes back as "exists" with nothing
+   * Moves or copies the whole group into toDir. A taken name comes back as "exists" with nothing
    * changed, unless overwrite: then a file is replaced and a folder merged. A copy into its own
-   * folder gets a free "name copy" name.
+   * folder gets a free "name copy" name. The group is checked up front; the completed part is
+   * reported if the file system fails halfway.
    */
-  transferPath(project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean): Promise<TransferResult>
-  /** Checks the whole group before moving; reports any completed moves if the file system fails. */
-  movePaths(project: Project, paths: string[], toDir: string, overwrite: boolean): Promise<MovePathsResult>
+  transferPaths(project: Project, paths: string[], toDir: string, mode: TransferMode, overwrite: boolean): Promise<TransferPathsResult>
   createDir(project: Project, parent: string, name: string): Promise<string>
   /** The project and tabs open when the app last ran; empty on a first launch. */
   getSession(): Promise<SessionState>
@@ -108,14 +107,12 @@ export type SessionState = {
 }
 
 export type PathMove = { from: string; to: string }
-export type MovePathsResult =
+export type TransferPathsResult =
   | { status: 'exists'; conflicts: { to: string; isDir: boolean }[] }
   | { status: 'done'; moves: PathMove[] }
   | { status: 'failed'; moves: PathMove[]; error: string }
 
 export type TransferMode = 'move' | 'copy'
-
-export type TransferResult = { status: 'done'; to: string } | { status: 'exists'; to: string; isDir: boolean }
 
 export type UsageWindow = {
   /** Human label: "5 часов", "Неделя", "Неделя · Fable". */

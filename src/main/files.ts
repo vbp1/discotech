@@ -1,7 +1,7 @@
 import { copyFile, cp, lstat, mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
-import type { DirEntry, FileContent, MovePathsResult, Project, TransferMode, TransferResult, WriteResult } from '../shared/api'
+import type { DirEntry, FileContent, PathMove, Project, TransferMode, TransferPathsResult, WriteResult } from '../shared/api'
 import { assertInsideProject, osPath, runInWsl } from './wsl'
 
 const MAX_TEXT_BYTES = 5 * 1024 * 1024
@@ -256,15 +256,13 @@ async function prepareTransfer(project: Project, from: string, toDir: string, mo
   return { from, to, sourceIsDir, taken }
 }
 
-export async function transferPath(
-  project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean
-): Promise<TransferResult> {
-  const plan = await prepareTransfer(project, from, toDir, mode)
-  if (plan.taken && !overwrite) return { status: 'exists', to: plan.to, isDir: plan.sourceIsDir }
-  return executeTransfer(project, plan, mode)
+async function transferOne(project: Project, plan: TransferPlan, mode: TransferMode): Promise<PathMove> {
+  await executeTransfer(project, plan, mode)
+  return { from: plan.from, to: plan.to }
 }
 
-async function executeTransfer(project: Project, plan: TransferPlan, mode: TransferMode): Promise<TransferResult> {
+/** Performs one planned transfer and returns the destination path. */
+async function executeTransfer(project: Project, plan: TransferPlan, mode: TransferMode): Promise<string> {
   const { from, to, sourceIsDir, taken } = plan
   const target = osPath(project, to)
   const source = osPath(project, from)
@@ -279,7 +277,7 @@ async function executeTransfer(project: Project, plan: TransferPlan, mode: Trans
           await copyFile(source, target, 1) // "wx": a target that appears meanwhile is left alone.
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-            throw new Error(`"${name}" was not copied: ${to} appeared meanwhile.`)
+            throw new Error(`"${path.posix.basename(from)}" was not copied: ${to} appeared meanwhile.`)
           }
           throw error
         }
@@ -288,10 +286,10 @@ async function executeTransfer(project: Project, plan: TransferPlan, mode: Trans
       // -n: a target that appears meanwhile is left alone, and the check below reports it.
       await runChecked(project, mode === 'move' ? ['mv', '-n', '-T', '--', from, to] : ['cp', '-a', '-n', '-T', '--', from, to])
       if (mode === 'move' && (await pathExists(project, from))) {
-        throw new Error(`"${name}" was not moved: ${to} appeared meanwhile.`)
+        throw new Error(`"${path.posix.basename(from)}" was not moved: ${to} appeared meanwhile.`)
       }
     }
-    return { status: 'done', to }
+    return to
   }
   if (!sourceIsDir && mode === 'move') {
     if (isWindowsProject(project)) await rename(source, target)
@@ -305,11 +303,13 @@ async function executeTransfer(project: Project, plan: TransferPlan, mode: Trans
       else await runChecked(project, ['rm', '-rf', '--', from])
     }
   }
-  return { status: 'done', to }
+  return to
 }
 
-/** Validates the complete group before any move; ordinary WSL moves use one mv invocation. */
-export async function movePaths(project: Project, paths: string[], toDir: string, overwrite: boolean): Promise<MovePathsResult> {
+/** Validates the complete group before any transfer; ordinary WSL transfers use one invocation. */
+export async function transferPaths(
+  project: Project, paths: string[], toDir: string, mode: TransferMode, overwrite: boolean
+): Promise<TransferPathsResult> {
   if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== 'string')) {
     throw new Error('Expected a non-empty list of file paths.')
   }
@@ -320,36 +320,44 @@ export async function movePaths(project: Project, paths: string[], toDir: string
     if (path.posix.normalize(from) !== from) throw new Error(`Expected a normalized path: "${from}".`)
     const name = path.posix.basename(from)
     const key = isWindowsProject(project) ? name.toLowerCase() : name
-    if (names.has(key)) throw new Error(`The selection contains more than one "${name}". Move them separately.`)
+    if (names.has(key)) throw new Error(`The selection contains more than one "${name}". Transfer them separately.`)
     names.add(key)
     if (paths.some((other) => other !== from && from.startsWith(other + '/'))) {
-      throw new Error('Move the selected folder without also listing its descendants.')
+      throw new Error('Transfer the selected folder without also listing its descendants.')
     }
   }
   if (!(await isDirectory(project, toDir))) throw new Error(`"${toDir}" is not a folder.`)
-  const plans = await Promise.all(paths.map((from) => prepareTransfer(project, from, toDir, 'move')))
+  const plans = await Promise.all(paths.map((from) => prepareTransfer(project, from, toDir, mode)))
+  if (new Set(plans.map((p) => p.to)).size !== plans.length) {
+    throw new Error('The transfer would place more than one item under the same name. Rename the sources first.')
+  }
   const conflicts = plans.filter((p) => p.taken).map((p) => ({ to: p.to, isDir: p.sourceIsDir }))
   if (conflicts.length > 0 && !overwrite) return { status: 'exists', conflicts }
 
-  if (!isWindowsProject(project) && plans.every((p) => !p.taken)) {
+  // One invocation when every item lands under its own name; free "name copy" targets and
+  // confirmed overloads go one by one.
+  const plainTargets = plans.every((p) => p.to === path.posix.join(toDir, path.posix.basename(p.from)))
+  if (!isWindowsProject(project) && plans.every((p) => !p.taken) && plainTargets) {
     let error: string | null = null
     try {
-      await runChecked(project, ['mv', '-n', '-t', toDir, '--', ...paths])
+      const command = mode === 'move' ? ['mv', '-n', '-t', toDir, '--', ...paths] : ['cp', '-a', '-n', '-t', toDir, '--', ...paths]
+      await runChecked(project, command)
     } catch (e) {
       error = (e as Error).message
     }
-    const remaining = await Promise.all(plans.map((p) => pathExists(project, p.from)))
-    const moves = plans.filter((_, index) => !remaining[index]).map(({ from, to }) => ({ from, to }))
+    // Targets were free at preflight: one that exists now means the item landed there.
+    const landed = await Promise.all(plans.map((p) => pathExists(project, p.to)))
+    const moves = plans.filter((_, index) => landed[index]).map(({ from, to }) => ({ from, to }))
     if (error || moves.length !== plans.length) {
-      return { status: 'failed', moves, error: error ?? 'Some destinations appeared during the move; those sources were left in place.' }
+      return { status: 'failed', moves, error: error ?? 'Some destinations appeared during the transfer; those items were left alone.' }
     }
     return { status: 'done', moves }
   }
 
-  // Native renames and confirmed folder merges run together, after the common preflight.
-  const results = await Promise.allSettled(plans.map((p) => executeTransfer(project, p, 'move')))
-  const moves = plans.filter((_, index) => results[index].status === 'fulfilled').map(({ from, to }) => ({ from, to }))
-  const errors = results.flatMap((result) => result.status === 'rejected' ? [String(result.reason)] : [])
+  // Native transfers and confirmed replacements run together, after the common preflight.
+  const results = await Promise.allSettled(plans.map((p) => transferOne(project, p, mode)))
+  const moves = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+  const errors = results.flatMap((result) => (result.status === 'rejected' ? [String(result.reason)] : []))
   return errors.length > 0 ? { status: 'failed', moves, error: errors.join('\n') } : { status: 'done', moves }
 }
 

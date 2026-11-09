@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } from 'e
 import path from 'node:path'
 import type { Project, SessionState, TransferMode, UsageProviderId } from '../shared/api'
 import { loadSession, saveSession } from './session'
-import { createDir, createFileContent, deletePath, listDir, movePaths, readFileContent, transferPath, writeFileContent } from './files'
+import { createDir, createFileContent, deletePath, listDir, readFileContent, transferPaths, writeFileContent } from './files'
 import { handlePreviewScheme, PREVIEW_SCHEME, registerPreviewScheme, setPreviewDraft } from './preview'
 import { addProject, listProjects, removeProject } from './projects'
 import { searchContent, searchNames } from './search'
@@ -115,11 +115,8 @@ function registerIpc(): void {
   ipcMain.handle('fs:create', (_e, project: Project, projectPath: string, text: string) =>
     createFileContent(project, projectPath, text)
   )
-  ipcMain.handle('fs:transfer', (_e, project: Project, from: string, toDir: string, mode: TransferMode, overwrite: boolean) =>
-    transferPath(project, from, toDir, mode, overwrite)
-  )
-  ipcMain.handle('fs:move-many', (_e, project: Project, paths: string[], toDir: string, overwrite: boolean) =>
-    movePaths(project, paths, toDir, overwrite)
+  ipcMain.handle('fs:transfer-many', (_e, project: Project, paths: string[], toDir: string, mode: TransferMode, overwrite: boolean) =>
+    transferPaths(project, paths, toDir, mode, overwrite)
   )
   ipcMain.handle('fs:mkdir', (_e, project: Project, parent: string, name: string) => createDir(project, parent, name))
   ipcMain.handle('session:get', () => loadSession())

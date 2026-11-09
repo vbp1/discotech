@@ -9,12 +9,12 @@ import { TabStrip } from './TabStrip'
 export type OpenRequest = { path: string; line?: number; nonce: number }
 
 /**
- * A file or folder moved or deleted from the tree: tabs at or under `from` follow it to `to`;
+ * A group of files or folders moved or deleted from the tree: tabs at or under a move follow it;
  * tabs at or under a deleted path close (files with unsaved edits are never moved or deleted).
  */
 export type PathNotice =
   | { kind: 'moved'; projectId: string; moves: PathMove[]; nonce: number }
-  | { kind: 'deleted'; projectId: string; path: string; nonce: number }
+  | { kind: 'deleted'; projectId: string; paths: string[]; nonce: number }
 
 // At most one tab is unpinned: the preview tab that the next opened file replaces.
 // A tab with unsaved edits is always pinned.
@@ -74,7 +74,7 @@ export function EditorArea(props: Props): React.JSX.Element {
       setActivePath((prev) => (prev === null ? null : follow(prev)))
       return
     }
-    const under = (p: string): boolean => p === pathNotice.path || p.startsWith(pathNotice.path + '/')
+    const under = (p: string): boolean => pathNotice.paths.some((root) => p === root || p.startsWith(root + '/'))
     setDeleted((prev) => new Set([...prev].filter((p) => !under(p))))
     const rest = tabs.filter((t) => !under(t.path))
     setTabs(rest)

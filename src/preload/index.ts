@@ -17,9 +17,8 @@ const api: DiscotechApi = {
     ipcRenderer.invoke('fs:write', project, projectPath, text, expectedMtimeMs),
   createFile: (project, projectPath, text) => ipcRenderer.invoke('fs:create', project, projectPath, text),
   closeWindowDiscarding: () => ipcRenderer.invoke('window:close-discarding'),
-  transferPath: (project, from, toDir, mode, overwrite) =>
-    ipcRenderer.invoke('fs:transfer', project, from, toDir, mode, overwrite),
-  movePaths: (project, paths, toDir, overwrite) => ipcRenderer.invoke('fs:move-many', project, paths, toDir, overwrite),
+  transferPaths: (project, paths, toDir, mode, overwrite) =>
+    ipcRenderer.invoke('fs:transfer-many', project, paths, toDir, mode, overwrite),
   createDir: (project, parent, name) => ipcRenderer.invoke('fs:mkdir', project, parent, name),
   getSession: () => ipcRenderer.invoke('session:get'),
   setSession: (state) => ipcRenderer.invoke('session:set', state),

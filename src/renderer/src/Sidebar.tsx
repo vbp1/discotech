@@ -18,9 +18,8 @@ type Props = {
   onOpenFile(path: string, line?: number): void
   clipboard: TreeClipboard | null
   onClipboardChange(clipboard: TreeClipboard | null): void
-  onTransferPath(project: Project, from: string, toDir: string, mode: TransferMode): Promise<string | null>
-  onMovePaths(project: Project, paths: string[], toDir: string): Promise<PathMove[]>
-  onDeletePath(project: Project, path: string): Promise<boolean>
+  onTransferPaths(project: Project, paths: string[], toDir: string, mode: TransferMode): Promise<PathMove[]>
+  onDeletePaths(project: Project, paths: string[]): Promise<boolean>
   activePath: string | null
 }
 
@@ -104,9 +103,8 @@ export function Sidebar(props: Props): React.JSX.Element {
               onOpenFile={props.onOpenFile}
               clipboard={props.clipboard}
               onClipboardChange={props.onClipboardChange}
-              onTransferPath={(from, toDir, mode) => props.onTransferPath(project, from, toDir, mode)}
-              onMovePaths={(paths, toDir) => props.onMovePaths(project, paths, toDir)}
-              onDeletePath={(path) => props.onDeletePath(project, path)}
+              onTransferPaths={(paths, toDir, mode) => props.onTransferPaths(project, paths, toDir, mode)}
+              onDeletePaths={(paths) => props.onDeletePaths(project, paths)}
             />
           )}
         </>
