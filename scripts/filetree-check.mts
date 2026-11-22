@@ -33,6 +33,7 @@ let opened: string[] = []
 let deletions: string[][] = []
 let cancel: string | null = null
 let clip: TreeClipboard | null = null
+let activePath: string | null = null
 ;(dom.window as any).discotech = {
   listDir: async (_: Project, path: string) => dirs.get(path) ?? [],
   onFsEvent: () => () => {}
@@ -41,7 +42,7 @@ const root = createRoot(document.getElementById('root')!)
 let revision = 0
 function treeProps(key: number) {
   return {
-    key, project, activePath: null, fontSize: 13, clipboard: clip,
+    key, project, activePath, fontSize: 13, clipboard: clip,
     onClipboardChange: (next: TreeClipboard | null) => { clip = next },
     onDeletePaths: async (paths: string[]) => {
       deletions.push(paths)
@@ -79,7 +80,7 @@ function treeProps(key: number) {
   }
 }
 async function reset() {
-  dirs = initial(); moves = []; batches = []; modes = []; targets = []; opened = []; deletions = []; cancel = null; clip = null
+  dirs = initial(); moves = []; batches = []; modes = []; targets = []; opened = []; deletions = []; cancel = null; clip = null; activePath = null
   await act(async () => {
     root.render(createElement(FileTree, treeProps(++revision)))
   })
@@ -133,15 +134,92 @@ function toolbar(title: string): HTMLButtonElement {
 }
 /** Lets async handlers from a previous action finish before the next assertion. */
 const flush = (): Promise<void> => act(async () => {})
-async function drag(from: string, target: string, dataOverride?: string) {
+async function startDrag(from: string, dataOverride?: string) {
   const data = new Map<string, string>()
   const dataTransfer = { setData: (key: string, value: string) => data.set(key, value), getData: (key: string) => dataOverride ?? data.get(key) ?? '', get types() { return [...data.keys()] } }
-  for (const [type, path] of [['dragstart', from], ['drop', target]]) {
+  const emit = async (type: string, path: string) => {
     const event = new dom.window.Event(type, { bubbles: true, cancelable: true })
     Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
     await act(async () => row(path).dispatchEvent(event))
   }
+  await emit('dragstart', from)
+  return emit
 }
+async function drag(from: string, target: string, dataOverride?: string) {
+  const emit = await startDrag(from, dataOverride)
+  await emit('drop', target)
+}
+const wait = (ms: number): Promise<void> => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)) })
+
+await reset()
+activePath = '/test/a'
+await rerender()
+await drag('/test/a', '/test/target')
+activePath = '/test/target/a'
+await rerender()
+assert.equal(row('/test/target').getAttribute('aria-expanded'), 'false', 'moving the active file does not reveal its destination')
+assert.equal(hasRow('/test/target/a'), false, 'the moved file stays inside the collapsed destination')
+activePath = '/test/folder/child'
+await rerender()
+assert.equal(row('/test/folder').getAttribute('aria-expanded'), 'true', 'opening another file still reveals its ancestors')
+
+for (const mode of ['copy', 'move'] as const) {
+  for (const via of ['menu', 'toolbar'] as const) {
+    await reset()
+    activePath = '/test/a'
+    await rerender()
+    const label = mode === 'copy' ? 'Копировать' : 'Вырезать'
+    if (via === 'menu') {
+      await openMenu('/test/a')
+      await menuClick(label)
+    } else {
+      await click('/test/a')
+      await act(async () => toolbar(label).click())
+    }
+    await rerender()
+    if (via === 'menu') {
+      await openMenu('/test/target')
+      await menuClick('Вставить')
+    } else {
+      await click('/test/target')
+      await click('/test/target')
+      await act(async () => toolbar('Вставить').click())
+    }
+    await flush()
+    if (mode === 'move') activePath = '/test/target/a'
+    await rerender()
+    assert.deepEqual(modes, [mode], `${via} pastes using ${mode}`)
+    assert.ok(dirs.get('/test/target')!.some((e) => e.path === '/test/target/a'), 'paste completes inside the destination')
+    assert.equal(row('/test/target').getAttribute('aria-expanded'), 'false', `${mode} via ${via} keeps the destination closed`)
+    assert.equal(hasRow('/test/target/a'), false, 'pasted items stay inside the collapsed destination')
+  }
+}
+
+await reset()
+let emit = await startDrag('/test/a')
+await emit('dragover', '/test/target')
+await wait(1700)
+assert.equal(row('/test/target').getAttribute('aria-expanded'), 'false', 'hovering for less than two seconds keeps the folder closed')
+await emit('dragover', '/test/target')
+await wait(400)
+assert.equal(row('/test/target').getAttribute('aria-expanded'), 'true', 'continuous hovering opens the folder after two seconds')
+await emit('drop', '/test/target')
+assert.ok(hasRow('/test/target/a'), 'a folder opened by hovering stays open after drop')
+
+await reset()
+emit = await startDrag('/test/a')
+await emit('dragover', '/test/target')
+await emit('drop', '/test/target')
+await wait(2100)
+assert.equal(row('/test/target').getAttribute('aria-expanded'), 'false', 'drop cancels the pending expansion timer')
+
+await reset()
+emit = await startDrag('/test/a')
+await emit('dragover', '/test/target')
+await emit('dragleave', '/test/target')
+await wait(2100)
+assert.equal(row('/test/target').getAttribute('aria-expanded'), 'false', 'leaving the tree cancels the pending expansion timer')
+await emit('dragend', '/test/a')
 
 await reset()
 await click('/test/target')

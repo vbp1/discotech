@@ -128,9 +128,13 @@ button:disabled {
 .drag button,
 .drag input,
 .drag select,
-.drag .tab,
 .drag .tabs {
   app-region: no-drag;
+}
+
+/* Only the viewport excludes dragging; scrolled-off tabs must not mask the sidebar. */
+.drag .tabs * {
+  app-region: initial;
 }
 
 .hidden {

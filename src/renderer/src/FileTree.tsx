@@ -8,7 +8,7 @@ import { baseName, itemsWord, parentDir, relativeTo, rootPrefix } from './paths'
 
 const RELOAD_DELAY_MS = 150
 // A dragged item held over a closed folder this long opens it, to drop into a subfolder.
-const DRAG_EXPAND_HOLD_MS = 1500
+const DRAG_EXPAND_HOLD_MS = 2000
 // Dragging this close to the top or bottom edge scrolls the tree.
 const DRAG_EDGE_ZONE_PX = 48
 const DRAG_MIME = 'application/x-discotech-paths'
@@ -87,7 +87,10 @@ export function FileTree(props: Props): React.JSX.Element {
   }, [project, loadDir])
 
   // Expand the folders leading to the file opened from search or tabs.
+  const revealedPath = useRef<string | null>(null)
   useEffect(() => {
+    if (activePath === revealedPath.current) return
+    revealedPath.current = activePath
     if (!activePath || !activePath.startsWith(rootPrefix(project.rootPath))) return
     const ancestors: string[] = []
     for (let dir = parentDir(activePath); dir.length > project.rootPath.length; dir = parentDir(dir)) {
@@ -251,6 +254,8 @@ export function FileTree(props: Props): React.JSX.Element {
       // Open folders that moved stay open at the new place, so their listings load there.
       const reopened = mode === 'move' ? [...expanded].filter((p) => follow(p) !== p).map(follow) : []
       if (mode === 'move') {
+        // A relocated active file keeps the current folder expansion state.
+        if (revealedPath.current) revealedPath.current = follow(revealedPath.current)
         setExpanded((prev) => new Set([...prev].map(follow)))
         setSelection((prev) => new Set([...prev].map(follow)))
         if (selectionAnchor.current) selectionAnchor.current = follow(selectionAnchor.current)

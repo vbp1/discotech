@@ -14,7 +14,7 @@ and a viewer, plus your Claude and Codex usage limits in the status bar. Styled 
 - **File tree** — lazy, virtualized, follows symlinks (resolved inside WSL), live updates via
   `inotifywait`. Select multiple items with `Ctrl+click` or a range with `Shift+click`, then work
   with the whole group: drag any selected item to move it, or copy, cut, paste and delete with the
-  context menu, the toolbar or `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Delete`. A 1.5 s hover opens a
+  context menu, the toolbar or `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Delete`. A 2 s hover opens a
   folder. Taken names are confirmed once for the group before anything changes: a file is replaced,
   a folder merged; a copy into its own folder takes a free "name copy" name. Create folders from the
   toolbar or context menu.
