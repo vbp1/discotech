@@ -7,8 +7,8 @@ import { handlePreviewScheme, PREVIEW_SCHEME, registerPreviewScheme, setPreviewD
 import { addProject, listProjects, removeProject } from './projects'
 import { searchContent, searchNames } from './search'
 import { getUsage } from './usage'
-import { stopWatching, watchProject } from './watcher'
-import { parseUnc, windowsDriveToProjectPath } from './wsl'
+import { stopWatching, watchOpenFiles, watchProject } from './watcher'
+import { osPath, parseUnc, windowsDriveToProjectPath } from './wsl'
 
 const DEFAULT_PICK_PATH = '\\\\wsl.localhost\\'
 
@@ -128,12 +128,35 @@ function registerIpc(): void {
       onStatus: (status) => mainWindow?.webContents.send('fs:watch-status', status)
     })
   })
+  ipcMain.handle('fs:watch-open-files', (_e, project: Project, paths: string[]) => watchOpenFiles(project, paths))
+  ipcMain.handle('fs:save-as', async (_e, project: Project, projectPath: string, text: string) => {
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: 'Save as',
+      defaultPath: osPath(project, projectPath)
+    })
+    if (result.canceled || !result.filePath) return null
+    const target = pickedProjectPath(project, result.filePath)
+    // The dialog has already asked before replacing a taken name.
+    const created = await createFileContent(project, target, text)
+    if (created.status === 'conflict') await writeFileContent(project, target, text, null)
+    return target
+  })
   ipcMain.handle('preview:draft', (_e, distro: string | null, projectPath: string, text: string | null) =>
     setPreviewDraft(distro, projectPath, text)
   )
   ipcMain.handle('usage:get', (_e, distro: string, disabled: UsageProviderId[]) => getUsage(distro, disabled))
   ipcMain.handle('search:names', (_e, project: Project, query: string) => searchNames(project, query))
   ipcMain.handle('search:content', (_e, project: Project, query: string) => searchContent(project, query))
+}
+
+/** The project path of a file picked in a dialog; a file in another distro is refused. */
+function pickedProjectPath(project: Project, picked: string): string {
+  if (project.distro === null) return windowsDriveToProjectPath(picked)
+  const { distro, linuxPath } = parseUnc(picked)
+  if (distro.toLowerCase() !== project.distro.toLowerCase()) {
+    throw new Error(`"${picked}" is in distro "${distro}", project "${project.name}" is in "${project.distro}". Nothing was saved.`)
+  }
+  return linuxPath
 }
 
 // A second copy could not open the first one's stored layout and tabs; it hands over to the first.

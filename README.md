@@ -23,8 +23,10 @@ and a viewer, plus your Claude and Codex usage limits in the status bar. Styled 
 - **Editor** — Monaco for code. Markdown opens in a visual editor (Tiptap) that saves only what you
   changed and refuses to save rather than reformat the file. HTML files render in an isolated frame,
   with a source view. Preview tabs, pinned tabs, separate zoom for the tree and the editor.
-- **Disk changes** — an unchanged tab follows the file on disk; a tab with edits warns and lets you
-  choose; a save never overwrites a newer file without asking.
+- **Disk changes** — an unchanged tab follows the file on disk, including files in hidden and
+  dependency folders the tree does not watch; a tab with edits keeps them, warns and lets you save
+  your version, load the one from disk or save yours under another name; a save never overwrites a
+  newer file without asking.
 - **Usage limits** — Claude (5-hour and weekly windows), Codex, and Z.ai (GLM Coding Plan, from the
   Claude Code provider settings file `~/.claude/settings-*.json` that points at Z.ai), read with
   the logins of the `claude` and `codex` CLIs in the distro's home. Right-click the widget to turn

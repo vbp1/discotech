@@ -79,6 +79,13 @@ export type DiscotechApi = {
   /** Deletes a file or folder for good. */
   deletePath(project: Project, projectPath: string): Promise<void>
   watchProject(project: Project): Promise<void>
+  /** The files open in the project's tabs: their changes are reported even in folders the tree does not watch. */
+  watchOpenFiles(project: Project, paths: string[]): Promise<void>
+  /**
+   * Asks for a new name in the save dialog and writes the text there; null when the user cancels.
+   * The dialog itself asks before replacing a taken name.
+   */
+  saveFileAs(project: Project, projectPath: string, text: string): Promise<string | null>
   searchNames(project: Project, query: string): Promise<NameSearchResult>
   searchContent(project: Project, query: string): Promise<ContentSearchResult>
   /** Text the HTML preview shows for a file instead of its disk content; null forgets it. */

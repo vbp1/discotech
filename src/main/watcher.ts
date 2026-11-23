@@ -24,12 +24,21 @@ type Listeners = {
   onStatus(status: WatchStatus): void
 }
 
-let current: { projectId: string; stop(): void } | null = null
+let current: { projectId: string; stop(): void; setOpenFiles(paths: string[]): void } | null = null
+
+/** Files open in tabs, per project; their changes are reported even where the tree is not watched. */
+const openFiles = new Map<string, string[]>()
 
 export function watchProject(project: Project, listeners: Listeners): void {
   stopWatching()
   if (project.distro === null) watchWindowsFolder(project, listeners)
   else watchInotify(project, project.distro, listeners)
+  current?.setOpenFiles(openFiles.get(project.id) ?? [])
+}
+
+export function watchOpenFiles(project: Project, paths: string[]): void {
+  openFiles.set(project.id, paths)
+  if (current?.projectId === project.id) current.setOpenFiles(paths)
 }
 
 // --exclude filters inotify events but still puts a watch on every excluded directory, so one
@@ -37,6 +46,7 @@ export function watchProject(project: Project, listeners: Listeners): void {
 // root is therefore watched non-recursively (that covers all top-level entries, hidden included)
 // and each visible top-level directory recursively; hidden directories and node_modules below the
 // top level stay unwatched. Top-level directories created later get a watcher of their own.
+// Folders of open files that these watchers miss are watched non-recursively by one more process.
 function watchInotify(project: Project, distro: string, listeners: Listeners): void {
   const root = project.rootPath
   const children = new Set<ChildProcessWithoutNullStreams>()
@@ -44,6 +54,10 @@ function watchInotify(project: Project, distro: string, listeners: Listeners): v
   const topLevel = new Map<string, ChildProcessWithoutNullStreams>()
   let stopped = false
   let stderr = ''
+  // Folders of open files outside the watched tree, and the process watching those that exist.
+  let fileDirs: string[] = []
+  let fileDirsChild: ChildProcessWithoutNullStreams | null = null
+  let fileDirsRun = 0
 
   const stop = (): void => {
     stopped = true
@@ -51,8 +65,39 @@ function watchInotify(project: Project, distro: string, listeners: Listeners): v
     children.clear()
     retired.clear()
     topLevel.clear()
+    fileDirsChild = null
   }
-  current = { projectId: project.id, stop }
+
+  const retire = (child: ChildProcessWithoutNullStreams): void => {
+    retired.add(child)
+    children.delete(child)
+    child.kill()
+  }
+
+  // A folder that does not exist cannot be watched (inotifywait exits); it is picked up when its
+  // creation is reported.
+  const watchFileDirs = (): void => {
+    const run = ++fileDirsRun
+    const dirs = fileDirs
+    const replace = (existing: string[]): void => {
+      if (stopped || run !== fileDirsRun) return
+      if (fileDirsChild) retire(fileDirsChild)
+      fileDirsChild = null
+      if (existing.length === 0) return
+      fileDirsChild = spawnInWsl(distro, ['inotifywait', '-m', '-q', ...INOTIFY_ARGS, ...existing])
+      report(fileDirsChild)
+    }
+    if (dirs.length === 0) return replace([])
+    void existingDirs(distro, dirs).then(replace, (error: Error) => fail(`Checking folders of open files failed: ${error.message}`))
+  }
+
+  const setOpenFiles = (paths: string[]): void => {
+    const dirs = [...new Set(paths.map(parentDir))].filter((dir) => !inWatchedTree(root, dir)).sort()
+    if (dirs.join('\n') === fileDirs.join('\n')) return
+    fileDirs = dirs
+    watchFileDirs()
+  }
+  current = { projectId: project.id, stop, setOpenFiles }
 
   const fail = (message: string): void => {
     if (stopped) return
@@ -101,12 +146,14 @@ function watchInotify(project: Project, distro: string, listeners: Listeners): v
       const child = topLevel.get(path)
       if (child && (flags.includes('DELETE') || flags.includes('MOVED_FROM'))) {
         topLevel.delete(path)
-        retired.add(child)
-        children.delete(child)
-        child.kill()
+        retire(child)
       } else if (!child && (flags.includes('CREATE') || flags.includes('MOVED_TO')) && isWatchedTopLevel(path.slice(path.lastIndexOf('/') + 1))) {
         spawnRecursive(path)
       }
+    }
+    // A folder of an open file appeared, or one above it: watch it from now on.
+    if (flags.includes('ISDIR') && (flags.includes('CREATE') || flags.includes('MOVED_TO'))) {
+      if (fileDirs.some((dir) => dir === path || dir.startsWith(path + '/'))) watchFileDirs()
     }
     if (!type) return
     listeners.onEvent({ projectId: project.id, type, path, isDir: flags.includes('ISDIR') })
@@ -122,9 +169,7 @@ function watchInotify(project: Project, distro: string, listeners: Listeners): v
       for (const [dir, child] of topLevel) {
         if (!dirs.includes(dir)) continue
         topLevel.delete(dir)
-        retired.add(child)
-        children.delete(child)
-        child.kill()
+        retire(child)
       }
       if (dirs.length === 0) return
       report(spawnInWsl(distro, ['inotifywait', '-m', '-r', '-q', ...INOTIFY_ARGS, '--exclude', EXCLUDE, ...dirs]))
@@ -155,6 +200,23 @@ async function listTopLevelDirs(distro: string, root: string): Promise<string[]>
   return stdout.split('\n').filter(Boolean)
 }
 
+/** Folders from the list that exist; the rest cannot be watched yet. */
+async function existingDirs(distro: string, dirs: string[]): Promise<string[]> {
+  const script = 'for d in "$@"; do if [ -d "$d" ]; then printf \'%s\\n\' "$d"; fi; done'
+  const { code, stdout, stderr } = await runInWsl(distro, ['sh', '-c', script, 'sh', ...dirs])
+  if (code !== 0) throw new Error(`sh exited with code ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}`)
+  return stdout.split('\n').filter(Boolean)
+}
+
+/** Whether the project watchers report changes of entries in this folder. */
+function inWatchedTree(root: string, dir: string): boolean {
+  if (dir === root) return true
+  const prefix = root.endsWith('/') ? root : root + '/'
+  if (!dir.startsWith(prefix)) return false
+  const parts = dir.slice(prefix.length).split('/')
+  return isWatchedTopLevel(parts[0]) && !parts.some((part) => EXCLUDED_SEGMENTS.has(part))
+}
+
 function parentDir(path: string): string {
   const slash = path.lastIndexOf('/')
   return slash <= 0 ? '/' : path.slice(0, slash)
@@ -173,10 +235,12 @@ function watchWindowsFolder(project: Project, listeners: Listeners): void {
     listeners.onStatus({ projectId: project.id, state: 'failed', message: `Watching "${windowsPath}" failed: ${(error as Error).message}` })
     return
   }
+  // Open files are reported even inside the folders the tree skips.
+  let open = new Set<string>()
   const stop = (): void => {
     watcher.close()
   }
-  current = { projectId: project.id, stop }
+  current = { projectId: project.id, stop, setOpenFiles: (paths) => (open = new Set(paths)) }
   watcher.on('error', (error: Error) => {
     if (current?.stop !== stop) return
     current = null
@@ -189,9 +253,9 @@ function watchWindowsFolder(project: Project, listeners: Listeners): void {
   function report(event: string, filename: string | null): void {
     if (filename === null) return
     const relative = filename.split(/[\\/]/).filter(Boolean)
-    if (relative.some((part) => EXCLUDED_SEGMENTS.has(part))) return
     const prefix = project.rootPath.endsWith('/') ? project.rootPath : project.rootPath + '/'
     const projectPath = prefix + relative.join('/')
+    if (relative.some((part) => EXCLUDED_SEGMENTS.has(part)) && !open.has(projectPath)) return
     if (event !== 'rename') {
       listeners.onEvent({ projectId: project.id, type: 'modify', path: projectPath, isDir: false })
       return

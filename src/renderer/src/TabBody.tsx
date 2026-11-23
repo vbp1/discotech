@@ -39,6 +39,8 @@ type Props = {
   orphanText: string | null
   /** The text of a gone file, to keep across restarts; null when the file is in place. */
   onOrphanTextChange(path: string, text: string | null): void
+  /** The tab's text was saved under another name, at this path. */
+  onSavedAs(path: string): void
 }
 
 const MARKDOWN_RE = /\.(md|markdown)$/i
@@ -178,6 +180,18 @@ export function TabBody(props: Props): React.JSX.Element {
 
   const currentSource = (): string | null => (mode === 'visual' ? markdownRef.current!.source() : draft)
 
+  /** The text to write; null, with the reason shown, when the visual edits cannot be written exactly. */
+  const sourceToSave = (): string | null => {
+    const source = currentSource()
+    if (source === null) {
+      toast.error(`«${baseName(path)}» не сохранён`, {
+        description:
+          'Правки нельзя вписать в файл, не тронув остальной текст. Файл на диске не изменён, правки остались здесь. Переключитесь в «Исходник» и сохраните оттуда — там файл пишется ровно как виден.'
+      })
+    }
+    return source
+  }
+
   // A gone file's text goes to the session, so the tab survives a restart.
   const currentText = useRef<() => string>(() => draft)
   currentText.current = () =>
@@ -208,14 +222,8 @@ export function TabBody(props: Props): React.JSX.Element {
     ) {
       return
     }
-    const source = currentSource()
-    if (source === null) {
-      toast.error(`«${baseName(path)}» не сохранён`, {
-        description:
-          'Правки нельзя вписать в файл, не тронув остальной текст. Файл на диске не изменён, правки остались здесь. Переключитесь в «Исходник» и сохраните оттуда — там файл пишется ровно как виден.'
-      })
-      return
-    }
+    const source = sourceToSave()
+    if (source === null) return
     setSaving(true)
     lastWritten.current = source
     try {
@@ -236,6 +244,26 @@ export function TabBody(props: Props): React.JSX.Element {
         setVisualBaseDirty(false)
       }
       setNotice(null)
+    } catch (e) {
+      toast.error(`«${baseName(path)}» не сохранён`, { description: errorText(e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // The edits go to the file picked in the dialog; this tab then shows its own file as it is on disk.
+  const saveAs = async (): Promise<void> => {
+    if (file.status !== 'text' || saving) return
+    const source = sourceToSave()
+    if (source === null) return
+    setSaving(true)
+    // Picking this same file writes it like a save.
+    lastWritten.current = source
+    try {
+      const target = await window.discotech.saveFileAs(project, path, source)
+      if (target === null) return
+      await loadFromDisk()
+      if (target !== path) props.onSavedAs(target)
     } catch (e) {
       toast.error(`«${baseName(path)}» не сохранён`, { description: errorText(e) })
     } finally {
@@ -299,26 +327,32 @@ export function TabBody(props: Props): React.JSX.Element {
 
   const renderNotice = (): React.JSX.Element | null => {
     if (!notice) return null
-    const discard = (
-      <button key="reload" onClick={() => void loadFromDisk()}>
-        Загрузить с диска (мои правки пропадут)
-      </button>
+    const choices = (
+      <>
+        <button onClick={() => void save(true)} disabled={saving}>
+          Сохранить мою версию
+        </button>
+        <button onClick={() => void loadFromDisk()} disabled={saving}>
+          Загрузить с диска (мои правки пропадут)
+        </button>
+        <button onClick={() => void saveAs()} disabled={saving}>
+          Сохранить как…
+        </button>
+      </>
     )
     switch (notice.kind) {
       case 'disk-changed':
         return (
           <div className="banner banner-warn">
-            <span>Файл изменился на диске, пока здесь есть несохранённые правки.</span>
-            {discard}
-            <button onClick={() => setNotice(null)}>Оставить мои правки</button>
+            <span>Файл изменился на диске, пока здесь есть несохранённые правки. Здесь пока ваша версия.</span>
+            {choices}
           </div>
         )
       case 'save-conflict':
         return (
           <div className="banner banner-warn">
             <span>Не сохранено: файл на диске изменился после открытия.</span>
-            <button onClick={() => void save(true)}>Перезаписать своими правками</button>
-            {discard}
+            {choices}
           </div>
         )
       case 'reformatted':

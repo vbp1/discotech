@@ -1,7 +1,9 @@
 import { FileText, Pin, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import type { PathMove, Project, SessionTab } from '../../shared/api'
 import { confirmDialog } from './confirm'
+import { errorText } from './errors'
 import { baseName, rootPrefix } from './paths'
 import { TabBody } from './TabBody'
 import { TabStrip } from './TabStrip'
@@ -42,6 +44,12 @@ export function EditorArea(props: Props): React.JSX.Element {
   const [reveal, setReveal] = useState<{ path: string; line: number } | null>(null)
   const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [deleted, setDeleted] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    window.discotech
+      .watchOpenFiles(project, tabs.map((t) => t.path))
+      .catch((e) => toast.error('Не удалось следить за открытыми файлами', { description: errorText(e) }))
+  }, [project, tabs])
 
   useEffect(() => {
     if (!openRequest || !openRequest.path.startsWith(rootPrefix(project.rootPath))) return
@@ -119,6 +127,12 @@ export function EditorArea(props: Props): React.JSX.Element {
   }, [])
 
   const onLineRevealed = useCallback(() => setReveal(null), [])
+
+  // A file saved under another name opens in a tab of its own.
+  const onSavedAs = useCallback((path: string) => {
+    setTabs((prev) => (prev.some((t) => t.path === path) ? prev : [...prev, { path, pinned: true }]))
+    setActivePath(path)
+  }, [])
 
   const onOrphanTextChange = useCallback((path: string, text: string | null) => {
     setTabs((prev) => {
@@ -228,6 +242,7 @@ export function EditorArea(props: Props): React.JSX.Element {
           onDeletedChange={onDeletedChange}
           orphanText={t.orphanText ?? null}
           onOrphanTextChange={onOrphanTextChange}
+          onSavedAs={onSavedAs}
         />
       ))}
     </div>
