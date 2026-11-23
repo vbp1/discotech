@@ -1,5 +1,6 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { CodeXml, Eye } from 'lucide-react'
+import { CodeXml, Eye, Redo2, Undo2 } from 'lucide-react'
+import { Uri } from 'monaco-editor'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { Project } from '../../shared/api'
@@ -57,9 +58,12 @@ export function TabBody(props: Props): React.JSX.Element {
   const isHtml = HTML_RE.test(path)
   const [file, setFile] = useState<FileState>({ status: 'loading' })
   const [mode, setMode] = useState<Mode>(isMarkdown || isHtml ? 'preview' : 'code')
+  const [sourceOpened, setSourceOpened] = useState(false)
   const [draft, setDraft] = useState('')
   const [notice, setNotice] = useState<Notice | null>(null)
   const [saving, setSaving] = useState(false)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
   const monacoRef = useRef<Parameters<OnMount>[0] | null>(null)
   const scheme = useColorScheme()
 
@@ -71,6 +75,9 @@ export function TabBody(props: Props): React.JSX.Element {
   const dirty = gone ? orphanPending : edited
 
   const applyDisk = useCallback((text: string, mtimeMs: number, realPath: string | null) => {
+    const model = monacoRef.current?.getModel()
+    // A different disk version replaces the history as well as the text.
+    if (model && model.getValue() !== text) model.setValue(text)
     setFile({ status: 'text', savedText: text, mtimeMs, realPath, gone: false })
     setDraft(text)
   }, [])
@@ -248,8 +255,33 @@ export function TabBody(props: Props): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [active])
 
-  const switchMode = (next: Mode): void => {
-    if (file.status === 'text') setMode(next)
+  const switchMode = (next: 'source' | 'preview'): void => {
+    if (next === 'source') setSourceOpened(true)
+    setMode(next)
+  }
+
+  const mountEditor: OnMount = (editor) => {
+    monacoRef.current = editor
+    const updateHistory = (): void => {
+      const model = editor.getModel()
+      setCanUndo(model?.canUndo() ?? false)
+      setCanRedo(model?.canRedo() ?? false)
+    }
+    const historyListener = editor.onDidChangeModelContent(updateHistory)
+    editor.onDidDispose(() => {
+      historyListener.dispose()
+      monacoRef.current = null
+      setCanUndo(false)
+      setCanRedo(false)
+    })
+    updateHistory()
+  }
+
+  const editHistory = (command: 'undo' | 'redo'): void => {
+    const editor = monacoRef.current
+    if (!editor) return
+    editor.focus()
+    void editor.getModel()?.[command]()
   }
 
   useEffect(() => {
@@ -319,17 +351,15 @@ export function TabBody(props: Props): React.JSX.Element {
             <HtmlPreview distro={project.distro} path={path} html={draft} />
           </div>
         )}
-        {mode !== 'preview' && (
-          <div className="tab-pane">
+        {(mode !== 'preview' || sourceOpened) && (
+          <div className={mode === 'preview' ? 'tab-pane hidden' : 'tab-pane'}>
             <Editor
-              path={`file://${path}`}
+              path={Uri.from({ scheme: 'file', authority: project.id, path: path.startsWith('/') ? path : `/${path}` }).toString()}
               value={draft}
               theme={scheme === 'dark' ? 'vs-dark' : 'vs'}
               options={{ minimap: { enabled: false }, fontSize, scrollBeyondLastLine: false, wordWrap: 'on' }}
               onChange={(value) => setDraft(value ?? '')}
-              onMount={(editor) => {
-                monacoRef.current = editor
-              }}
+              onMount={mountEditor}
             />
           </div>
         )}
@@ -348,6 +378,28 @@ export function TabBody(props: Props): React.JSX.Element {
         </span>
         {saving && <span className="breadcrumb-muted">Сохранение…</span>}
         {(edited || gone) && !saving && <span className="breadcrumb-muted">не сохранено · Ctrl+S</span>}
+        {file.status === 'text' && mode !== 'preview' && (
+          <div className="mode-toggle">
+            <button
+              className="icon-button"
+              aria-label="Отменить"
+              title="Отменить (Ctrl+Z)"
+              disabled={!canUndo}
+              onClick={() => editHistory('undo')}
+            >
+              <Undo2 size={15} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Повторить"
+              title="Повторить (Ctrl+Y)"
+              disabled={!canRedo}
+              onClick={() => editHistory('redo')}
+            >
+              <Redo2 size={15} />
+            </button>
+          </div>
+        )}
         {(isMarkdown || isHtml) && file.status === 'text' && (
           <div className="mode-toggle">
             <button className={`icon-button${mode === 'source' ? ' active' : ''}`} title="Исходник" onClick={() => switchMode('source')}>

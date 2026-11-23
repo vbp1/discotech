@@ -1,6 +1,6 @@
-// Checks how open tabs follow file changes made outside the app, in a disposable copy of the app.
-// Run with Windows Node after scripts/run-win.sh has built the app into the Windows working folder:
-//   node \\wsl.localhost\<distro>\<repo>\scripts\disk-change-desktop-check.mjs <distro> [port]
+// Checks disk changes and edit history in a disposable instance of the app.
+// Run with Windows Node. Pass a Windows path to a separate build, or use the build from scripts/run-win.sh:
+//   node \\wsl.localhost\<distro>\<repo>\scripts\disk-change-desktop-check.mjs <distro> [port] [app-dir]
 // The script writes a throwaway project into the distro's /tmp, starts electron.exe from
 // %DISCOTECH_WIN_DIR% (default %USERPROFILE%\discotech-dev) with its own --user-data-dir and the
 // DevTools port (default 9334), and removes the copy, its data and the project at the end.
@@ -11,15 +11,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const [distro, portArg = '9334'] = process.argv.slice(2)
+const [distro, portArg = '9334', buildDir] = process.argv.slice(2)
 if (!distro || !/^\d+$/.test(portArg)) {
-  console.error('Usage: node disk-change-desktop-check.mjs <WSL distro> [DevTools port, default 9334]. Nothing was started.')
+  console.error('Usage: node disk-change-desktop-check.mjs <WSL distro> [DevTools port, default 9334] [built app directory]. Nothing was started.')
   process.exit(2)
 }
 const port = Number(portArg)
 const winDir = process.env.DISCOTECH_WIN_DIR ?? path.join(process.env.USERPROFILE ?? '', 'discotech-dev')
 const electronExe = path.join(winDir, 'node_modules', 'electron', 'dist', 'electron.exe')
-const appDir = path.join(winDir, 'app')
+const appDir = buildDir ?? path.join(winDir, 'app')
 for (const required of [electronExe, path.join(appDir, 'package.json')]) {
   try {
     await readFile(required)
@@ -40,15 +40,17 @@ const userData = await mkdtemp(path.join(tmpdir(), 'discotech-disk-check-data-')
 await mkdir(path.join(fixture, '.hidden'))
 const NOTES = path.join(fixture, '.hidden', 'notes.txt')
 const DOC = path.join(fixture, '.hidden', 'doc.md')
+const HTML = path.join(fixture, '.hidden', 'page.html')
 await writeFile(NOTES, 'line one\n')
 await writeFile(DOC, '# Title\n\nFirst paragraph.\n')
+await writeFile(HTML, '<p>Example</p>\n')
 // Both files sit in a hidden folder, which the project watchers skip: only open tabs are watched there.
 await writeFile(path.join(userData, 'settings.json'), JSON.stringify({ projects: [{ id: 'check', name: 'check', distro, rootPath: root }] }))
 await writeFile(
   path.join(userData, 'session.json'),
   JSON.stringify({
     activeProjectId: 'check',
-    projects: { check: { tabs: [{ path: `${root}/.hidden/notes.txt`, pinned: true }, { path: `${root}/.hidden/doc.md`, pinned: true }], active: `${root}/.hidden/notes.txt` } }
+    projects: { check: { tabs: ['notes.txt', 'doc.md', 'page.html'].map((name) => ({ path: `${root}/.hidden/${name}`, pinned: true })), active: `${root}/.hidden/notes.txt` } }
   })
 )
 
@@ -100,7 +102,8 @@ try {
   // Typing goes to the focused element only while the page counts as focused.
   await send('Emulation.setFocusEmulationEnabled', { enabled: true })
 
-  const activeBody = `[...document.querySelectorAll('.tab-body')].find((el) => !el.classList.contains('hidden'))`
+  const activeBodySelector = '.tab-body:not(.hidden)'
+  const activeBody = `document.querySelector('${activeBodySelector}')`
   const tabText = () => evaluate(new Function(`
     const body = ${activeBody}
     if (!body) return ''
@@ -109,12 +112,11 @@ try {
   const bannerButtons = () => evaluate(new Function(`
     const banner = ${activeBody}?.querySelector('.banner-warn')
     return banner ? [...banner.querySelectorAll('button')].map((b) => b.textContent) : null`))
-  const clickBanner = (label) => evaluate((label, find) => {
-    const body = eval(find)
-    const button = [...body.querySelectorAll('.banner-warn button')].find((b) => b.textContent === label)
+  const clickBanner = (label) => evaluate((label, selector) => {
+    const button = [...document.querySelectorAll(`${selector} .banner-warn button`)].find((b) => b.textContent === label)
     if (!button) throw new Error(`Missing banner button: ${label}`)
     button.click()
-  }, label, activeBody)
+  }, label, activeBodySelector)
   const activateTab = (name) => evaluate((name) => {
     const tab = [...document.querySelectorAll('.tab')].find((t) => t.querySelector('.tab-title').textContent === name)
     if (!tab) throw new Error(`Missing tab: ${name}`)
@@ -124,10 +126,25 @@ try {
     const toast = [...document.querySelectorAll('[data-sonner-toast]')].find((t) => t.textContent.includes('не отслеживаются'))
     return toast ? toast.textContent : null
   })
+  const focusEditor = () => evaluate((selector) => document.querySelector(`${selector} .monaco-editor .native-edit-context`).focus(), activeBodySelector)
+  async function ctrlKey(key, code, windowsVirtualKeyCode, modifiers = 2) {
+    const params = { key, code, windowsVirtualKeyCode, modifiers }
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+  const historyButtons = () => evaluate((selector) => {
+    const body = document.querySelector(selector)
+    return [...body.querySelectorAll('button[aria-label="Отменить"], button[aria-label="Повторить"]')].map((b) => !b.disabled)
+  }, activeBodySelector)
+  const clickHistory = (label) => evaluate((selector, label) => {
+    const button = document.querySelector(`${selector} button[aria-label="${label}"]`)
+    if (!button || button.disabled) throw new Error(`History button unavailable: ${label}`)
+    button.click()
+  }, activeBodySelector, label)
+  const dirtyMark = () => evaluate((selector) => document.querySelector(`${selector} .breadcrumb`).textContent.includes('не сохранено'), activeBodySelector)
   async function typeAtEnd(text) {
-    await evaluate((find) => eval(find).querySelector('.monaco-editor .native-edit-context').focus(), activeBody)
-    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35, modifiers: 2 })
-    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35, modifiers: 2 })
+    await focusEditor()
+    await ctrlKey('End', 'End', 35)
     await send('Input.insertText', { text })
     await waitFor(async () => (await tabText()).includes(text.trim()), `typed "${text}"`)
     // The edit must be in the tab's state before the disk changes.
@@ -148,8 +165,24 @@ try {
   }
 
   await waitFor(async () => (await tabText()).includes('line one'), 'notes.txt loaded')
+  assert.deepEqual(await historyButtons(), [false, false])
+  await typeAtEnd(' HISTORY')
+  assert.deepEqual(await historyButtons(), [true, false])
+  await ctrlKey('z', 'KeyZ', 90)
+  await waitFor(async () => !(await tabText()).includes('HISTORY') && !(await dirtyMark()), 'Ctrl+Z restores the saved text')
+  assert.deepEqual(await historyButtons(), [false, true])
+  await ctrlKey('y', 'KeyY', 89)
+  await waitFor(async () => (await tabText()).includes('HISTORY') && (await dirtyMark()), 'Ctrl+Y restores the edit')
+  await clickHistory('Отменить')
+  await waitFor(async () => !(await dirtyMark()), 'Undo button restores the saved text')
+  await ctrlKey('Z', 'KeyZ', 90, 10)
+  await waitFor(async () => (await tabText()).includes('HISTORY') && (await dirtyMark()), 'Ctrl+Shift+Z restores the edit')
+  await clickHistory('Отменить')
+  await waitFor(async () => !(await dirtyMark()), 'notes.txt has no unsaved edits')
+  console.log('PASS undo, redo, keyboard shortcuts and the unsaved indicator')
   await untilFollowed(NOTES, 'changed outside')
   assert.equal(await bannerButtons(), null, 'an unchanged tab follows the disk without a banner')
+  assert.deepEqual(await historyButtons(), [false, false], 'a replaced disk version clears the previous history')
   console.log('PASS unchanged code tab in a hidden folder follows the disk')
 
   await activateTab('doc.md')
@@ -162,19 +195,43 @@ try {
     const body = ${activeBody}
     const view = body.querySelector('.tab-pane:not(.hidden) .ProseMirror')
     return { editable: view?.getAttribute('contenteditable') ?? null, toolbar: body.querySelector('.md-toolbar') !== null }`))
-  const clickMode = (title) => evaluate((title, find) => {
-    const button = eval(find).querySelector(`.mode-toggle button[title="${title}"]`)
+  const clickMode = (title) => evaluate((title, selector) => {
+    const button = document.querySelector(`${selector} .mode-toggle button[title="${title}"]`)
     if (!button) throw new Error(`Missing mode button: ${title}`)
     button.click()
-  }, title, activeBody)
+  }, title, activeBodySelector)
   assert.deepEqual(await previewState(), { editable: 'false', toolbar: false }, 'the Markdown preview is read-only')
   await clickMode('Исходник')
   await waitFor(async () => (await tabText()).includes('Rewritten outside'), 'doc.md source shown')
+  assert.deepEqual(await historyButtons(), [false, false], 'this tab has its own history')
   await typeAtEnd(' EDITED')
   await clickMode('Просмотр')
   await waitFor(async () => (await previewState()).editable === 'false' && (await tabText()).includes('EDITED'), 'preview shows the source edit')
-  await waitFor(() => evaluate(new Function(`return ${activeBody}.querySelector('.breadcrumb').textContent.includes('не сохранено')`)), 'unsaved mark in preview')
+  await waitFor(dirtyMark, 'unsaved mark in preview')
   console.log('PASS Markdown preview is read-only and shows unsaved source edits')
+
+  await activateTab('page.html')
+  await clickMode('Исходник')
+  await waitFor(async () => (await tabText()).includes('Example'), 'HTML source shown')
+  await typeAtEnd(' HTMLEDIT')
+  await clickMode('Просмотр')
+  await waitFor(() => evaluate((selector) => !!document.querySelector(`${selector} iframe.html-preview`), activeBodySelector), 'HTML preview shown')
+  assert.deepEqual(await historyButtons(), [])
+  await clickMode('Исходник')
+  await clickHistory('Отменить')
+  await waitFor(async () => !(await tabText()).includes('HTMLEDIT') && !(await dirtyMark()), 'HTML undo after preview')
+  await clickHistory('Повторить')
+  await waitFor(async () => (await tabText()).includes('HTMLEDIT') && (await dirtyMark()), 'HTML redo after preview')
+  console.log('PASS HTML keeps its history through preview')
+
+  await activateTab('doc.md')
+  assert.deepEqual(await historyButtons(), [])
+  await clickMode('Исходник')
+  await clickHistory('Отменить')
+  await waitFor(async () => !(await tabText()).includes('EDITED') && !(await dirtyMark()), 'Markdown undo after preview and tab switch')
+  await clickHistory('Повторить')
+  await waitFor(async () => (await tabText()).includes('EDITED') && (await dirtyMark()), 'Markdown redo after preview and tab switch')
+  console.log('PASS Markdown keeps its history through preview and tab switches')
 
   await activateTab('notes.txt')
   await typeAtEnd(' MINE')
@@ -197,6 +254,7 @@ try {
   await waitFor(async () => (await tabText()).includes('third outside change'), 'disk version loaded')
   assert.ok(!(await tabText()).includes('AGAIN'), 'edits dropped')
   assert.equal(await bannerButtons(), null)
+  assert.deepEqual(await historyButtons(), [false, false], 'discarded edits stay out of history')
   console.log('PASS "Загрузить с диска" replaces the edits with the disk version')
   assert.deepEqual(exceptions, [], 'no uncaught renderer errors')
 } finally {
