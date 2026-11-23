@@ -156,7 +156,25 @@ try {
   await waitFor(async () => (await tabText()).includes('First paragraph'), 'doc.md loaded')
   await writeFile(DOC, '# Title\n\nRewritten outside.\n')
   await waitFor(async () => (await tabText()).includes('Rewritten outside'), 'doc.md follows the disk')
-  console.log('PASS unchanged visual Markdown tab follows the disk')
+  console.log('PASS unchanged Markdown preview follows the disk')
+
+  const previewState = () => evaluate(new Function(`
+    const body = ${activeBody}
+    const view = body.querySelector('.tab-pane:not(.hidden) .ProseMirror')
+    return { editable: view?.getAttribute('contenteditable') ?? null, toolbar: body.querySelector('.md-toolbar') !== null }`))
+  const clickMode = (title) => evaluate((title, find) => {
+    const button = eval(find).querySelector(`.mode-toggle button[title="${title}"]`)
+    if (!button) throw new Error(`Missing mode button: ${title}`)
+    button.click()
+  }, title, activeBody)
+  assert.deepEqual(await previewState(), { editable: 'false', toolbar: false }, 'the Markdown preview is read-only')
+  await clickMode('Исходник')
+  await waitFor(async () => (await tabText()).includes('Rewritten outside'), 'doc.md source shown')
+  await typeAtEnd(' EDITED')
+  await clickMode('Просмотр')
+  await waitFor(async () => (await previewState()).editable === 'false' && (await tabText()).includes('EDITED'), 'preview shows the source edit')
+  await waitFor(() => evaluate(new Function(`return ${activeBody}.querySelector('.breadcrumb').textContent.includes('не сохранено')`)), 'unsaved mark in preview')
+  console.log('PASS Markdown preview is read-only and shows unsaved source edits')
 
   await activateTab('notes.txt')
   await typeAtEnd(' MINE')

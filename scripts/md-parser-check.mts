@@ -1,5 +1,7 @@
-// Checks that opening and closing markdown editors does not accumulate parser extensions.
-// Bundle like md-keys-check.mts; optionally pass a real Markdown file to measure its load time.
+// Checks that opening and closing markdown previews does not accumulate parser extensions.
+// Usage: npx esbuild scripts/md-parser-check.mts --bundle --platform=node --format=esm \
+//          --external:jsdom --outfile=out/md-parser-check.mjs && node out/md-parser-check.mjs [FILE.md]
+// Optionally pass a real Markdown file to measure its load time.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
@@ -9,8 +11,7 @@ for (const key of ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'ge
   ;(globalThis as any)[key] ??= (dom.window as any)[key]
 }
 const { Editor } = await import('@tiptap/core')
-const { markdownExtensions, makeBaseline, sourceFromEdits } = await import('../src/renderer/src/markdown/document')
-const { markdownOf } = await import('../src/renderer/src/markdown/trailingParagraph')
+const { markdownExtensions } = await import('../src/renderer/src/markdown/document')
 const source = process.argv[2]
   ? readFileSync(process.argv[2], 'utf8')
   : '# Heading\n\nText with **bold** and [a link](https://example.com).\n\n- [ ] Task\n\n| A | B |\n| --- | --- |\n| x | y |\n'
@@ -31,13 +32,9 @@ for (let i = 0; i < 30; i++) {
   try {
     assert.notEqual(editor.markdown!.instance, parser, 'each editor must own its parser')
     const start = performance.now()
-    const baseline = makeBaseline(source, (body) => {
-      editor.commands.setContent(body, { contentType: 'markdown', emitUpdate: false })
-      return markdownOf(editor)
-    })
+    editor.commands.setContent(source, { contentType: 'markdown', emitUpdate: false })
     times.push(performance.now() - start)
     assert.deepEqual(editor.markdown!.parse(source), expected, 'opening another editor must preserve parsing')
-    assert.equal(sourceFromEdits(baseline, editor), source, 'opening must preserve the original file')
   } finally {
     editor.destroy()
   }

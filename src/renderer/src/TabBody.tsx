@@ -1,12 +1,12 @@
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { CodeXml, Eye, PencilLine } from 'lucide-react'
+import { CodeXml, Eye } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { Project } from '../../shared/api'
 import { confirmDialog } from './confirm'
 import { errorText } from './errors'
 import { HtmlPreview } from './HtmlPreview'
-import { MarkdownEditor, type MarkdownEditorHandle } from './MarkdownEditor'
+import { MarkdownPreview } from './MarkdownPreview'
 import { baseName, relativeTo } from './paths'
 import { useColorScheme } from './useColorScheme'
 
@@ -19,12 +19,10 @@ type FileState =
   /** gone: nothing is at the path any more; the tab keeps the text it had. */
   | { status: 'text'; savedText: string; mtimeMs: number; realPath: string | null; gone: boolean }
 
-type Notice =
-  | { kind: 'disk-changed' }
-  | { kind: 'save-conflict' }
-  | { kind: 'reformatted' }
+type Notice = { kind: 'disk-changed' } | { kind: 'save-conflict' }
 
-type Mode = 'code' | 'visual' | 'source' | 'preview'
+/** preview: a read-only rendering of markdown or HTML; the text is edited in source. */
+type Mode = 'code' | 'source' | 'preview'
 
 type Props = {
   project: Project
@@ -45,7 +43,6 @@ type Props = {
 
 const MARKDOWN_RE = /\.(md|markdown)$/i
 const HTML_RE = /\.html?$/i
-const DIRTY_CHECK_DELAY_MS = 300
 const ORPHAN_SAVE_DELAY_MS = 500
 
 function formatSize(bytes: number): string {
@@ -59,35 +56,24 @@ export function TabBody(props: Props): React.JSX.Element {
   const isMarkdown = MARKDOWN_RE.test(path)
   const isHtml = HTML_RE.test(path)
   const [file, setFile] = useState<FileState>({ status: 'loading' })
-  const [mode, setMode] = useState<Mode>(isMarkdown ? 'visual' : isHtml ? 'preview' : 'code')
+  const [mode, setMode] = useState<Mode>(isMarkdown || isHtml ? 'preview' : 'code')
   const [draft, setDraft] = useState('')
-  // Visual mode: whether the editor content differs from the text it was loaded with,
-  // and whether that text already differed from the disk.
-  const [visualChanged, setVisualChanged] = useState(false)
-  const [visualBaseDirty, setVisualBaseDirty] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [saving, setSaving] = useState(false)
-  const markdownRef = useRef<MarkdownEditorHandle>(null)
   const monacoRef = useRef<Parameters<OnMount>[0] | null>(null)
   const scheme = useColorScheme()
 
   const savedText = file.status === 'text' ? file.savedText : null
-  const edited = savedText !== null && (mode === 'visual' ? visualChanged || visualBaseDirty : draft !== savedText)
+  const edited = savedText !== null && draft !== savedText
   const gone = file.status === 'text' && file.gone
   // A gone file's text is kept in the session; it is unsaved only until it gets there.
   const [orphanPending, setOrphanPending] = useState(false)
   const dirty = gone ? orphanPending : edited
 
-  const applyDisk = useCallback(
-    (text: string, mtimeMs: number, realPath: string | null) => {
-      setFile({ status: 'text', savedText: text, mtimeMs, realPath, gone: false })
-      setDraft(text)
-      setVisualChanged(false)
-      setVisualBaseDirty(false)
-      if (mode === 'visual') markdownRef.current?.load(text)
-    },
-    [mode]
-  )
+  const applyDisk = useCallback((text: string, mtimeMs: number, realPath: string | null) => {
+    setFile({ status: 'text', savedText: text, mtimeMs, realPath, gone: false })
+    setDraft(text)
+  }, [])
 
   const fetchFile = useCallback(async () => {
     const content = await window.discotech.readFile(project, path)
@@ -153,7 +139,6 @@ export function TabBody(props: Props): React.JSX.Element {
         if (current.status === 'text' && current.gone) {
           // The tab's text now differs from the file: it counts as unsaved edits.
           setFile({ ...current, savedText: result.text, gone: false })
-          setVisualBaseDirty(true)
         }
         setNotice({ kind: 'disk-changed' })
       }
@@ -178,24 +163,9 @@ export function TabBody(props: Props): React.JSX.Element {
     wasActive.current = active
   }, [active, syncWithDisk])
 
-  const currentSource = (): string | null => (mode === 'visual' ? markdownRef.current!.source() : draft)
-
-  /** The text to write; null, with the reason shown, when the visual edits cannot be written exactly. */
-  const sourceToSave = (): string | null => {
-    const source = currentSource()
-    if (source === null) {
-      toast.error(`«${baseName(path)}» не сохранён`, {
-        description:
-          'Правки нельзя вписать в файл, не тронув остальной текст. Файл на диске не изменён, правки остались здесь. Переключитесь в «Исходник» и сохраните оттуда — там файл пишется ровно как виден.'
-      })
-    }
-    return source
-  }
-
   // A gone file's text goes to the session, so the tab survives a restart.
-  const currentText = useRef<() => string>(() => draft)
-  currentText.current = () =>
-    mode === 'visual' ? (markdownRef.current?.source() ?? markdownRef.current?.canonicalSource() ?? draft) : draft
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   const orphanTimer = useRef<number | null>(null)
   const { onOrphanTextChange } = props
   const reportOrphan = useCallback(() => {
@@ -204,7 +174,7 @@ export function TabBody(props: Props): React.JSX.Element {
     orphanTimer.current = window.setTimeout(() => {
       orphanTimer.current = null
       const current = stateRef.current.file
-      onOrphanTextChange(path, current.status === 'text' && current.gone ? currentText.current() : null)
+      onOrphanTextChange(path, current.status === 'text' && current.gone ? draftRef.current : null)
       setOrphanPending(false)
     }, ORPHAN_SAVE_DELAY_MS)
   }, [path, onOrphanTextChange])
@@ -222,8 +192,7 @@ export function TabBody(props: Props): React.JSX.Element {
     ) {
       return
     }
-    const source = sourceToSave()
-    if (source === null) return
+    const source = draft
     setSaving(true)
     lastWritten.current = source
     try {
@@ -237,12 +206,6 @@ export function TabBody(props: Props): React.JSX.Element {
         return
       }
       setFile({ ...file, savedText: source, mtimeMs: result.mtimeMs, gone: false })
-      setDraft(source)
-      if (mode === 'visual') {
-        markdownRef.current!.markSaved(source)
-        setVisualChanged(false)
-        setVisualBaseDirty(false)
-      }
       setNotice(null)
     } catch (e) {
       toast.error(`«${baseName(path)}» не сохранён`, { description: errorText(e) })
@@ -254,8 +217,7 @@ export function TabBody(props: Props): React.JSX.Element {
   // The edits go to the file picked in the dialog; this tab then shows its own file as it is on disk.
   const saveAs = async (): Promise<void> => {
     if (file.status !== 'text' || saving) return
-    const source = sourceToSave()
-    if (source === null) return
+    const source = draft
     setSaving(true)
     // Picking this same file writes it like a save.
     lastWritten.current = source
@@ -287,37 +249,13 @@ export function TabBody(props: Props): React.JSX.Element {
   }, [active])
 
   const switchMode = (next: Mode): void => {
-    if (next === mode || file.status !== 'text') return
-    if (isHtml) {
-      // Both HTML views show the same draft text.
-    } else if (next === 'source') {
-      const precise = markdownRef.current!.source()
-      setDraft(precise ?? markdownRef.current!.canonicalSource())
-      if (precise === null) setNotice({ kind: 'reformatted' })
-    } else {
-      markdownRef.current!.load(draft)
-      setVisualChanged(false)
-      setVisualBaseDirty(draft !== file.savedText)
-      if (notice?.kind === 'reformatted') setNotice(null)
-    }
-    setMode(next)
-  }
-
-  // The visual editor reports every keystroke; comparing serializations is deferred.
-  const dirtyTimer = useRef<number | null>(null)
-  const onVisualChange = (): void => {
-    if (dirtyTimer.current !== null) window.clearTimeout(dirtyTimer.current)
-    dirtyTimer.current = window.setTimeout(() => {
-      dirtyTimer.current = null
-      setVisualChanged(markdownRef.current?.changed() ?? false)
-    }, DIRTY_CHECK_DELAY_MS)
-    if (gone) reportOrphan()
+    if (file.status === 'text') setMode(next)
   }
 
   useEffect(() => {
     if (props.revealLine === null || file.status !== 'text') return
-    // The visual view has no source lines to jump to.
-    if (mode === 'visual' || mode === 'preview') return props.onLineRevealed()
+    // The preview has no source lines to jump to.
+    if (mode === 'preview') return props.onLineRevealed()
     const editor = monacoRef.current
     if (!editor) return
     editor.revealLineInCenter(props.revealLine)
@@ -355,16 +293,6 @@ export function TabBody(props: Props): React.JSX.Element {
             {choices}
           </div>
         )
-      case 'reformatted':
-        return (
-          <div className="banner banner-warn">
-            <span>
-              Правки из красивого вида не удалось вписать точечно, поэтому здесь весь файл в том виде, как его записывает
-              редактор: отступы и пустые строки могли поменяться по всему документу. Сохранение запишет ровно этот текст.
-            </span>
-            <button onClick={() => setNotice(null)}>Понятно</button>
-          </div>
-        )
     }
   }
 
@@ -382,16 +310,16 @@ export function TabBody(props: Props): React.JSX.Element {
     return (
       <>
         {isMarkdown && (
-          <div className={mode === 'visual' ? 'tab-pane' : 'tab-pane hidden'}>
-            <MarkdownEditor ref={markdownRef} initialSource={file.savedText} fontSize={fontSize} onChange={onVisualChange} />
+          <div className={mode === 'preview' ? 'tab-pane' : 'tab-pane hidden'}>
+            <MarkdownPreview source={draft} visible={mode === 'preview'} fontSize={fontSize} />
           </div>
         )}
-        {mode === 'preview' && (
+        {isHtml && mode === 'preview' && (
           <div className="tab-pane">
             <HtmlPreview distro={project.distro} path={path} html={draft} />
           </div>
         )}
-        {mode !== 'visual' && mode !== 'preview' && (
+        {mode !== 'preview' && (
           <div className="tab-pane">
             <Editor
               path={`file://${path}`}
@@ -420,17 +348,7 @@ export function TabBody(props: Props): React.JSX.Element {
         </span>
         {saving && <span className="breadcrumb-muted">Сохранение…</span>}
         {(edited || gone) && !saving && <span className="breadcrumb-muted">не сохранено · Ctrl+S</span>}
-        {isMarkdown && file.status === 'text' && (
-          <div className="mode-toggle">
-            <button className={`icon-button${mode === 'source' ? ' active' : ''}`} title="Исходник" onClick={() => switchMode('source')}>
-              <CodeXml size={15} />
-            </button>
-            <button className={`icon-button${mode === 'visual' ? ' active' : ''}`} title="Красиво" onClick={() => switchMode('visual')}>
-              <PencilLine size={15} />
-            </button>
-          </div>
-        )}
-        {isHtml && file.status === 'text' && (
+        {(isMarkdown || isHtml) && file.status === 'text' && (
           <div className="mode-toggle">
             <button className={`icon-button${mode === 'source' ? ' active' : ''}`} title="Исходник" onClick={() => switchMode('source')}>
               <CodeXml size={15} />

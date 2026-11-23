@@ -4,8 +4,7 @@
 
 Parts of discotech are adapted from [Orca](https://github.com/stablyai/orca):
 
-- `src/renderer/src/markdown/reconcile.ts`, `src/renderer/src/markdown/blockSource.ts`,
-  `src/renderer/src/markdown/frontMatter.ts` — saving visual markdown edits without reformatting the file;
+- `src/renderer/src/markdown/frontMatter.ts` — splitting front matter from markdown text;
 - `src/main/usage.ts` — Claude and Codex usage requests;
 - `src/renderer/src/providerIcons.tsx` — Claude and OpenAI marks;
 - `src/renderer/src/Toaster.tsx`, `src/renderer/src/confirm.tsx`, `src/renderer/src/styles.css` — visual style and design tokens.
