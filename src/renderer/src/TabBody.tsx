@@ -32,7 +32,7 @@ type Props = {
   fontSize: number
   revealLine: number | null
   onLineRevealed(): void
-  onDirtyChange(path: string, dirty: boolean): void
+  onDirtyChange(path: string, dirty: boolean, edited: boolean): void
   onDeletedChange(path: string, deleted: boolean): void
   /** Text kept from the session for a file that was gone when the app last ran. */
   orphanText: string | null
@@ -53,7 +53,7 @@ function formatSize(bytes: number): string {
 }
 
 export function TabBody(props: Props): React.JSX.Element {
-  const { project, path, active, fontSize } = props
+  const { project, path, active, fontSize, onDirtyChange } = props
   const isMarkdown = MARKDOWN_RE.test(path)
   const isHtml = HTML_RE.test(path)
   const [file, setFile] = useState<FileState>({ status: 'loading' })
@@ -115,7 +115,8 @@ export function TabBody(props: Props): React.JSX.Element {
     void loadFromDisk()
   }, [loadFromDisk])
 
-  useEffect(() => props.onDirtyChange(path, dirty), [dirty, path, props.onDirtyChange])
+  // A move can look like a missing file while the transfer is still reporting its new path.
+  useEffect(() => onDirtyChange(path, dirty, edited), [dirty, edited, path, onDirtyChange])
   useEffect(() => props.onDeletedChange(path, file.status === 'deleted' || gone), [file.status, gone, path, props.onDeletedChange])
 
   // Disk changes: an unchanged tab follows the disk; a tab with edits warns instead.

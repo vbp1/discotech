@@ -1,5 +1,5 @@
 import { FileText, Pin, X } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { PathMove, Project, SessionTab } from '../../shared/api'
 import { confirmDialog } from './confirm'
@@ -19,7 +19,7 @@ export type PathNotice =
   | { kind: 'deleted'; projectId: string; paths: string[]; nonce: number }
 
 // At most one tab is unpinned: the preview tab that the next opened file replaces.
-// A tab with unsaved edits is always pinned.
+// A tab edited by the user is pinned.
 type Tab = SessionTab
 
 type Props = {
@@ -43,7 +43,30 @@ export function EditorArea(props: Props): React.JSX.Element {
   useEffect(() => onTabsChange(project.id, { tabs, active: activePath }), [project.id, tabs, activePath, onTabsChange])
   const [reveal, setReveal] = useState<{ path: string; line: number } | null>(null)
   const [dirty, setDirty] = useState<Set<string>>(new Set())
+  const dirtyRef = useRef(dirty)
+  useEffect(() => {
+    dirtyRef.current = dirty
+  }, [dirty])
   const [deleted, setDeleted] = useState<Set<string>>(new Set())
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    if (!menu) return
+    const close = (): void => setMenu(null)
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('blur', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('pointerdown', close)
+      window.removeEventListener('blur', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [menu])
 
   useEffect(() => {
     window.discotech
@@ -54,11 +77,15 @@ export function EditorArea(props: Props): React.JSX.Element {
   useEffect(() => {
     if (!openRequest || !openRequest.path.startsWith(rootPrefix(project.rootPath))) return
     const { path, line } = openRequest
+    const dirtyPaths = dirtyRef.current
     setTabs((prev) => {
       if (prev.some((t) => t.path === path)) return prev
       const tab: Tab = { path, pinned: false }
       const previewIndex = prev.findIndex((t) => !t.pinned)
-      return previewIndex < 0 ? [...prev, tab] : prev.map((t, i) => (i === previewIndex ? tab : t))
+      if (previewIndex < 0) return [...prev, tab]
+      const preview = prev[previewIndex]
+      if (!hasTextToKeep(preview, dirtyPaths)) return prev.map((t, i) => (i === previewIndex ? tab : t))
+      return [...prev.map((t) => (t === preview ? { ...t, pinned: true } : t)), tab]
     })
     setActivePath(path)
     setReveal(line === undefined ? null : { path, line })
@@ -105,7 +132,7 @@ export function EditorArea(props: Props): React.JSX.Element {
     // Runs once per notice; tabs and activePath are read as they are when it arrives.
   }, [pathNotice])
 
-  const onDirtyChange = useCallback((path: string, isDirty: boolean) => {
+  const onDirtyChange = useCallback((path: string, isDirty: boolean, edited = isDirty) => {
     setDirty((prev) => {
       if (prev.has(path) === isDirty) return prev
       const next = new Set(prev)
@@ -113,7 +140,7 @@ export function EditorArea(props: Props): React.JSX.Element {
       else next.delete(path)
       return next
     })
-    if (isDirty) setTabs((prev) => prev.map((t) => (t.path === path && !t.pinned ? { ...t, pinned: true } : t)))
+    if (edited) setTabs((prev) => prev.map((t) => (t.path === path && !t.pinned ? { ...t, pinned: true } : t)))
   }, [])
 
   const onDeletedChange = useCallback((path: string, isDeleted: boolean) => {
@@ -171,14 +198,36 @@ export function EditorArea(props: Props): React.JSX.Element {
     if (activePath === path) setActivePath(rest[Math.min(index, rest.length - 1)]?.path ?? null)
   }
 
+  const closeOtherTabs = async (path: string): Promise<void> => {
+    const others = tabs.filter((tab) => tab.path !== path)
+    const unsaved = others.filter((tab) => hasTextToKeep(tab, dirty))
+    if (
+      unsaved.length > 0 &&
+      !(await confirmDialog({
+        title: 'Закрыть остальные вкладки?',
+        description: `Несохранённый текст пропадёт: ${unsaved.map((tab) => `«${baseName(tab.path)}»`).join(', ')}.`,
+        confirmLabel: 'Закрыть без сохранения',
+        destructive: true
+      }))
+    ) return
+
+    const closing = new Set(others.map((tab) => tab.path))
+    setTabs((prev) => prev.filter((tab) => !closing.has(tab.path)))
+    setActivePath(path)
+  }
+
   const activateTab = (path: string): void => {
     setActivePath(path)
     setTabs((prev) => prev.map((t) => (t.path === path && !t.pinned ? { ...t, pinned: true } : t)))
   }
 
-  // The unpinned tab becomes the preview tab; the previous preview tab closes.
+  // The unpinned tab becomes the preview tab; keep the previous one's only copy of text.
   const unpinTab = (path: string): void => {
-    const rest = tabs.filter((t) => t.pinned || t.path === path).map((t) => (t.path === path ? { ...t, pinned: false } : t))
+    const rest = tabs.flatMap((t) => {
+      if (t.path === path) return [{ ...t, pinned: false }]
+      if (t.pinned) return [t]
+      return hasTextToKeep(t, dirty) ? [{ ...t, pinned: true }] : []
+    })
     setTabs(rest)
     if (activePath && !rest.some((t) => t.path === activePath)) setActivePath(path)
   }
@@ -195,6 +244,10 @@ export function EditorArea(props: Props): React.JSX.Element {
               title={t.pinned ? t.path : `${t.path}\nЩелчок по вкладке закрепит её`}
               onClick={() => activateTab(t.path)}
               onAuxClick={(e) => e.button === 1 && void closeTab(t.path)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ path: t.path, x: e.clientX, y: e.currentTarget.getBoundingClientRect().bottom })
+              }}
             >
               <FileText size={13} className="tab-icon" />
               <span className={`tab-title${deleted.has(t.path) ? ' tab-deleted' : ''}`}>{baseName(t.path)}</span>
@@ -228,6 +281,21 @@ export function EditorArea(props: Props): React.JSX.Element {
           )
         })}
       </TabStrip>
+      {visible && menu && tabs.some((tab) => tab.path === menu.path) && (
+        <div className="menu" style={{ left: Math.min(menu.x, window.innerWidth - 204), top: menu.y }}>
+          <button
+            className="menu-item"
+            disabled={tabs.length < 2}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => {
+              setMenu(null)
+              void closeOtherTabs(menu.path)
+            }}
+          >
+            <span className="menu-label">Закрыть остальные</span>
+          </button>
+        </div>
+      )}
       {tabs.length === 0 && <div className="empty">Откройте файл в дереве слева.</div>}
       {tabs.map((t) => (
         <TabBody
@@ -247,4 +315,8 @@ export function EditorArea(props: Props): React.JSX.Element {
       ))}
     </div>
   )
+}
+
+function hasTextToKeep(tab: Tab, dirty: ReadonlySet<string>): boolean {
+  return dirty.has(tab.path) || tab.orphanText !== undefined
 }

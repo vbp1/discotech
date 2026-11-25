@@ -4,6 +4,7 @@
 // The script writes a throwaway project into the distro's /tmp, starts electron.exe from
 // %DISCOTECH_WIN_DIR% (default %USERPROFILE%\discotech-dev) with its own --user-data-dir and the
 // DevTools port (default 9334), and removes the copy, its data and the project at the end.
+// Set DISCOTECH_TAB_SCREENSHOT to a Windows path to capture the tab context menu.
 // The "Сохранить как…" button opens the native Windows dialog, which DevTools cannot drive: check it by hand.
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
@@ -38,12 +39,15 @@ const fixture = await mkdtemp(`\\\\wsl.localhost\\${distro}\\tmp\\discotech-disk
 const root = '/tmp/' + path.basename(fixture)
 const userData = await mkdtemp(path.join(tmpdir(), 'discotech-disk-check-data-'))
 await mkdir(path.join(fixture, '.hidden'))
+await mkdir(path.join(fixture, 'destination'))
 const NOTES = path.join(fixture, '.hidden', 'notes.txt')
 const DOC = path.join(fixture, '.hidden', 'doc.md')
 const HTML = path.join(fixture, '.hidden', 'page.html')
 await writeFile(NOTES, 'line one\n')
 await writeFile(DOC, '# Title\n\nFirst paragraph.\n')
 await writeFile(HTML, '<p>Example</p>\n')
+await writeFile(path.join(fixture, 'preview.txt'), 'Preview tab\n')
+await writeFile(path.join(fixture, 'another.txt'), 'Another file\n')
 // Both files sit in a hidden folder, which the project watchers skip: only open tabs are watched there.
 await writeFile(path.join(userData, 'settings.json'), JSON.stringify({ projects: [{ id: 'check', name: 'check', distro, rootPath: root }] }))
 await writeFile(
@@ -256,6 +260,72 @@ try {
   assert.equal(await bannerButtons(), null)
   assert.deepEqual(await historyButtons(), [false, false], 'discarded edits stay out of history')
   console.log('PASS "Загрузить с диска" replaces the edits with the disk version')
+
+  const rowClick = (file) => evaluate((file) => {
+    const row = [...document.querySelectorAll('.tree-row')].find((el) => el.title === file)
+    if (!row) throw new Error(`Missing row: ${file}`)
+    row.click()
+  }, file)
+  const preview = () => evaluate(() => document.querySelector('.tab-preview')?.title.split('\n')[0] ?? null)
+  await rowClick(root + '/preview.txt')
+  await waitFor(async () => (await tabText()).includes('Preview tab'), 'preview.txt loaded as a preview')
+  assert.equal(await preview(), root + '/preview.txt')
+  await evaluate((root) => {
+    const rows = [...document.querySelectorAll('.tree-row')]
+    const dataTransfer = new DataTransfer()
+    rows.find((el) => el.title === root + '/preview.txt').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }))
+    rows.find((el) => el.title === root + '/destination').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }))
+  }, root)
+  await waitFor(() => evaluate((root) => [...document.querySelectorAll('.tab')].some((el) => el.title.split('\n')[0] === root + '/destination/preview.txt'), root), 'preview follows its move')
+  assert.equal(await preview(), root + '/destination/preview.txt', 'moving a preview does not pin it')
+  await rowClick(root + '/another.txt')
+  await waitFor(async () => (await preview()) === root + '/another.txt', 'opening another file replaces the moved preview')
+  console.log('PASS moved preview stays replaceable')
+
+  const tabPaths = () => evaluate(() => [...document.querySelectorAll('.tab')].map((el) => el.title.split('\n')[0]))
+  const dialogButton = (label) => evaluate((label) => {
+    const button = [...document.querySelectorAll('.dialog button')].find((el) => el.textContent === label)
+    if (!button) throw new Error(`Missing dialog button: ${label}`)
+    button.click()
+  }, label)
+  const click = async (selector, label, button) => {
+    const point = await evaluate((selector, label) => {
+      const element = [...document.querySelectorAll(selector)].find((el) => el.textContent === label)
+      if (!element) throw new Error(`Missing ${selector}: ${label}`)
+      const { x, y, width, height } = element.getBoundingClientRect()
+      return { x: x + width / 2, y: y + height / 2 }
+    }, selector, label)
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button, clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button, clickCount: 1 })
+  }
+  const openTabMenu = (name) => click('.tab-title', name, 'right')
+  const clickCloseOthers = () => click('.menu-item', 'Закрыть остальные', 'left')
+  const beforeClosing = await tabPaths()
+  assert.equal(beforeClosing.length, 4)
+  await openTabMenu('another.txt')
+  if (process.env.DISCOTECH_TAB_SCREENSHOT) {
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DISCOTECH_TAB_SCREENSHOT, Buffer.from(screenshot.data, 'base64'))
+  }
+  await clickCloseOthers()
+  await dialogButton('Отмена')
+  assert.deepEqual(await tabPaths(), beforeClosing, 'cancelling leaves all tabs open')
+  await openTabMenu('another.txt')
+  await clickCloseOthers()
+  await dialogButton('Закрыть без сохранения')
+  assert.deepEqual(await tabPaths(), [root + '/another.txt'])
+  assert.equal(await preview(), root + '/another.txt', 'closing others does not pin the selected preview')
+  console.log('PASS Close Others asks once about unsaved changes and keeps the selected tab')
+
+  await activateTab('another.txt')
+  await rowClick(root + '/.hidden/notes.txt')
+  await waitFor(async () => (await preview()) === root + '/.hidden/notes.txt', 'a second clean tab is active')
+  await openTabMenu('another.txt')
+  await clickCloseOthers()
+  assert.deepEqual(await tabPaths(), [root + '/another.txt'])
+  assert.equal(await evaluate(() => document.querySelector('.tab-active .tab-title')?.textContent), 'another.txt')
+  assert.equal(await evaluate(() => document.querySelector('.dialog') !== null), false)
+  console.log('PASS Close Others activates the clicked tab and closes clean tabs without a dialog')
   assert.deepEqual(exceptions, [], 'no uncaught renderer errors')
 } finally {
   ws?.close()
