@@ -311,6 +311,104 @@ button:disabled {
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
 }
 
+.sidebar-views {
+  margin: 4px 8px;
+}
+
+.worktree-list {
+  margin: 0;
+  padding-inline: 4px;
+  list-style: none;
+}
+
+.worktree-hint {
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+}
+
+.worktree-heading {
+  display: flex;
+  align-items: center;
+}
+
+.worktree-disclosure {
+  flex: none;
+}
+
+.worktree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.worktree-row > svg {
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.worktree-row > span {
+  min-width: 0;
+}
+
+.worktree-row strong,
+.worktree-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worktree-row small {
+  color: var(--muted-foreground);
+}
+
+.worktree-row:hover:not(:disabled) {
+  background: var(--sidebar-accent);
+}
+
+.worktree-row[aria-pressed="true"] {
+  background: var(--sidebar-selected);
+}
+
+.worktree-changes {
+  margin: 2px 0 4px 26px;
+  padding: 0 0 0 7px;
+  border-left: 1px solid var(--border);
+  list-style: none;
+}
+
+.worktree-change {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 5px;
+  border-radius: 4px;
+  text-align: left;
+}
+
+.worktree-change:hover {
+  background: var(--sidebar-accent);
+}
+
+.worktree-change-code {
+  flex: none;
+  min-width: 2ch;
+  font-family: monospace;
+  color: var(--muted-foreground);
+}
+
+.worktree-change-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tree,
 .results {
   flex: 1;
@@ -732,6 +830,14 @@ body.resizing {
 
 .status-muted {
   color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-git {
+  flex-shrink: 0;
+  max-width: 42%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

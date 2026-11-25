@@ -5,10 +5,11 @@
 // %DISCOTECH_WIN_DIR% (default %USERPROFILE%\discotech-dev) with its own --user-data-dir and the
 // DevTools port (default 9334), and removes the copy, its data and the project at the end.
 // Set DISCOTECH_TAB_SCREENSHOT to a Windows path to capture the tab context menu.
+// Set DISCOTECH_GIT_SCREENSHOT to a Windows path to capture the inline diff and worktree list.
 // The "Сохранить как…" button opens the native Windows dialog, which DevTools cannot drive: check it by hand.
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -38,7 +39,10 @@ if (portTaken) {
 const fixture = await mkdtemp(`\\\\wsl.localhost\\${distro}\\tmp\\discotech-disk-check-`)
 const root = '/tmp/' + path.basename(fixture)
 const userData = await mkdtemp(path.join(tmpdir(), 'discotech-disk-check-data-'))
+const nativeRoot = path.join(userData, 'native repo')
+await mkdir(nativeRoot)
 await mkdir(path.join(fixture, '.hidden'))
+await mkdir(path.join(fixture, '.hidden', 'unwatched'))
 await mkdir(path.join(fixture, 'destination'))
 const NOTES = path.join(fixture, '.hidden', 'notes.txt')
 const DOC = path.join(fixture, '.hidden', 'doc.md')
@@ -49,7 +53,10 @@ await writeFile(HTML, '<p>Example</p>\n')
 await writeFile(path.join(fixture, 'preview.txt'), 'Preview tab\n')
 await writeFile(path.join(fixture, 'another.txt'), 'Another file\n')
 // Both files sit in a hidden folder, which the project watchers skip: only open tabs are watched there.
-await writeFile(path.join(userData, 'settings.json'), JSON.stringify({ projects: [{ id: 'check', name: 'check', distro, rootPath: root }] }))
+await writeFile(path.join(userData, 'settings.json'), JSON.stringify({ projects: [
+  { id: 'check', name: 'check', distro, rootPath: root },
+  { id: 'native', name: 'Native Git', distro: null, rootPath: nativeRoot.replaceAll('\\', '/') }
+] }))
 await writeFile(
   path.join(userData, 'session.json'),
   JSON.stringify({
@@ -326,6 +333,230 @@ try {
   assert.equal(await evaluate(() => document.querySelector('.tab-active .tab-title')?.textContent), 'another.txt')
   assert.equal(await evaluate(() => document.querySelector('.dialog') !== null), false)
   console.log('PASS Close Others activates the clicked tab and closes clean tabs without a dialog')
+
+  // Open files make .hidden itself watched, but its child directory is still unwatched.
+  const unwatched = root + '/.hidden/unwatched'
+  const hasTreeRow = (file) => evaluate((file) => [...document.querySelectorAll('.tree-row')].some((el) => el.title === file), file)
+  await rowClick(unwatched)
+  await writeFile(path.join(fixture, '.hidden', 'unwatched', 'button.txt'), 'Found by the toolbar\n')
+  assert.equal(await hasTreeRow(unwatched + '/button.txt'), false)
+  await evaluate(() => document.querySelector('button[title="Обновить дерево (F5)"]').click())
+  await waitFor(() => hasTreeRow(unwatched + '/button.txt'), 'the refresh button reloads the expanded directory')
+
+  await writeFile(path.join(fixture, '.hidden', 'unwatched', 'f5.txt'), 'Found by F5\n')
+  assert.equal(await hasTreeRow(unwatched + '/f5.txt'), false)
+  await focusEditor()
+  const timeOrigin = await evaluate(() => performance.timeOrigin)
+  await ctrlKey('F5', 'F5', 116, 0)
+  await waitFor(() => hasTreeRow(unwatched + '/f5.txt'), 'F5 reloads the expanded directory')
+  assert.equal(await evaluate(() => performance.timeOrigin), timeOrigin, 'F5 does not reload the app')
+  console.log('PASS tree refresh button and F5 pick up files outside the watcher and keep folders expanded')
+
+  const gitStatusText = () => evaluate(() => document.querySelector('.status-git')?.textContent.trim() ?? null)
+  const buttonText = (selector, label) => evaluate((selector, label) => {
+    const control = [...document.querySelectorAll(selector)].find((el) => el.textContent.trim() === label)
+    if (!control || control.disabled) throw new Error(`Unavailable button: ${label}`)
+    control.click()
+  }, selector, label)
+  const git = (directory, ...args) => {
+    const command = directory.startsWith('/') ? 'wsl.exe' : 'git.exe'
+    const argv = directory.startsWith('/') ? ['-d', distro, '--exec', 'git'] : []
+    const result = spawnSync(command, [...argv, '-C', directory, ...args], { encoding: 'utf8', windowsHide: true })
+    assert.ifError(result.error)
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout
+  }
+  const stageInitialFile = async (directory, ioPath) => {
+    git(directory, 'init', '-b', 'main')
+    await writeFile(path.join(ioPath, 'counter.txt'), 'same\nold\n')
+    git(directory, 'add', 'counter.txt')
+  }
+  const commitBase = (directory) => git(directory, '-c', 'user.name=Discotech Check', '-c', 'user.email=check@example.invalid', 'commit', '-m', 'Base')
+  const waitGit = (label) => waitFor(async () => (await gitStatusText()) === label, `Git status shows ${label}`)
+  const removeSelected = () => evaluate(() => document.querySelector('[aria-label="Удалить выбранную рабочую копию"]').click())
+  const selectWorktree = (branch) => evaluate((branch) => {
+    const row = [...document.querySelectorAll('.worktree-row')].find((el) => el.querySelector('strong').textContent === branch)
+    if (!row || row.disabled) throw new Error(`Unavailable worktree: ${branch}`)
+    row.click()
+  }, branch)
+  const toggleWorktree = (branch) => evaluate((branch) => {
+    const row = [...document.querySelectorAll('.worktree-heading')].find((el) => el.querySelector('strong').textContent === branch)
+    const disclosure = row?.querySelector('.worktree-disclosure')
+    if (!disclosure || disclosure.disabled) throw new Error(`Cannot expand or collapse worktree: ${branch}`)
+    disclosure.click()
+  }, branch)
+  const changedFileNames = () => evaluate(() => [...document.querySelectorAll('.worktree-change-name')].map((el) => el.textContent))
+  const openChangedFile = (name) => evaluate((name) => {
+    const item = [...document.querySelectorAll('.worktree-change')].find((el) => el.title === name)
+    if (!item) throw new Error(`Missing changed file: ${name}`)
+    item.click()
+  }, name)
+  const tabNames = (selector = '.tab-title') => evaluate((selector) => [...document.querySelectorAll(selector)].map((el) => el.textContent), selector)
+  const previewTabNames = () => tabNames('.tab-preview .tab-title')
+  const diffView = () => evaluate(() => {
+    const view = document.querySelector('.git-diff-view:not(.hidden)')
+    const editor = view?.querySelector('.monaco-diff-editor, .monaco-editor')
+    return {
+      title: view?.querySelector('.breadcrumb-path').textContent,
+      message: view?.querySelector('.empty')?.textContent,
+      text: editor?.innerText.replaceAll('\u00a0', ' '),
+      removed: editor?.querySelectorAll('.line-delete').length,
+      added: editor?.querySelectorAll('.line-insert').length
+    }
+  })
+  const waitDiff = async (deleted, added) => {
+    let view
+    try {
+      await waitFor(async () => {
+        view = await diffView()
+        return view.text !== undefined &&
+          (deleted === null ? view.removed === 0 : view.removed > 0 && view.text.includes(deleted)) &&
+          (added === null ? view.added === 0 : view.added > 0 && view.text.includes(added))
+      }, `inline diff shows removed "${deleted}" and added "${added}"`)
+    } catch (error) {
+      throw new Error(`${error.message}. Diff view: ${JSON.stringify(view)}`, { cause: error })
+    }
+  }
+
+  assert.equal(await gitStatusText(), null, 'plain folder has no Git status')
+  await stageInitialFile(root, fixture)
+  commitBase(root)
+  await writeFile(path.join(fixture, 'counter.txt'), 'same\nnew\n')
+  git(root, 'add', 'counter.txt')
+  await writeFile(path.join(fixture, 'counter.txt'), 'same\nnew\nextra\n')
+  await waitGit('main (-1:+2)')
+  git(root, 'worktree', 'add', '-b', 'feat/clean', root + '/Копия чистая')
+  git(root, 'worktree', 'add', '-b', 'feat/dirty', root + '/dirty')
+  git(root, 'worktree', 'lock', root + '/dirty')
+  await waitFor(() => evaluate(() => !!document.querySelector('.sidebar-views')), 'working copies section appears')
+  await buttonText('.sidebar-views button', 'Рабочие копии')
+  await selectWorktree('feat/dirty')
+  await waitGit('feat/dirty (-0:+0)')
+  assert.equal(await evaluate(() => document.querySelector('[aria-label="Удалить выбранную рабочую копию"]').disabled), true)
+  git(root, 'worktree', 'unlock', root + '/dirty')
+  const changedCounter = path.join(fixture, 'dirty', 'counter.txt')
+  await writeFile(changedCounter, 'same\ncopy edit\n')
+  await waitGit('feat/dirty (-1:+1)')
+  await writeFile(path.join(fixture, 'dirty', 'new file.txt'), 'Not yet added\n')
+  await toggleWorktree('feat/dirty')
+  await waitFor(async () => (await changedFileNames()).join(',') === 'counter.txt,new file.txt', 'expanded worktree lists tracked and untracked files')
+  await openChangedFile('counter.txt')
+  await waitDiff('old', 'copy edit')
+  assert.deepEqual(await previewTabNames(), ['counter.txt'])
+  await openChangedFile('new file.txt')
+  await waitDiff(null, 'Not yet added')
+  assert.deepEqual(await tabNames(), ['another.txt', 'new file.txt'], 'a new comparison replaces the unpinned comparison')
+  await openChangedFile('new file.txt')
+  await waitDiff(null, 'Not yet added')
+  assert.deepEqual(await previewTabNames(), ['new file.txt'], 'reopening from the worktree keeps a comparison temporary')
+  await openChangedFile('counter.txt')
+  await waitDiff('old', 'copy edit')
+  await click('.tab-title', 'counter.txt', 'left')
+  await openChangedFile('new file.txt')
+  await waitDiff(null, 'Not yet added')
+  assert.deepEqual(await tabNames(), ['another.txt', 'counter.txt', 'new file.txt'])
+  await evaluate(() => document.querySelector('.tab-diff:not(.tab-preview) .tab-pin').click())
+  assert.deepEqual(await tabNames(), ['another.txt', 'counter.txt'], 'unpinning a comparison replaces the existing preview')
+  assert.deepEqual(await previewTabNames(), ['counter.txt'])
+  await click('.tab-title', 'counter.txt', 'left')
+  await openChangedFile('new file.txt')
+  await waitDiff(null, 'Not yet added')
+  await click('.tab-title', 'another.txt', 'left')
+  await waitFor(async () => (await tabText()).includes('Another file'), 'ordinary editor tab is available with two comparisons open')
+  await click('.tab-title', 'counter.txt', 'left')
+  await waitDiff('old', 'copy edit')
+  if (process.env.DISCOTECH_GIT_SCREENSHOT) {
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' })
+    await writeFile(process.env.DISCOTECH_GIT_SCREENSHOT, Buffer.from(screenshot.data, 'base64'))
+  }
+  await rm(changedCounter)
+  await waitFor(() => evaluate(() => [...document.querySelectorAll('.worktree-change')].some((el) => el.title === 'counter.txt' && el.querySelector('.worktree-change-code').textContent === 'D')), 'deleted file appears in the list')
+  await openChangedFile('counter.txt')
+  await waitDiff('old', null)
+  assert.deepEqual(await tabNames(), ['another.txt', 'counter.txt', 'new file.txt'], 'reopening a comparison keeps the same tab')
+  assert.deepEqual(await previewTabNames(), ['new file.txt'], 'reopening a pinned comparison keeps it pinned')
+  await evaluate(() => document.querySelector('.tab-active.tab-diff .tab-close').click())
+  await waitDiff(null, 'Not yet added')
+  assert.deepEqual(await tabNames(), ['another.txt', 'new file.txt'], 'closing one diff keeps neighboring tabs')
+  await click('.tab-title', 'another.txt', 'left')
+  await typeAtEnd(' DRAFT')
+  await openTabMenu('new file.txt')
+  await clickCloseOthers()
+  await dialogButton('Отмена')
+  assert.deepEqual(await tabNames(), ['another.txt', 'new file.txt'], 'cancelling Close Others preserves the edited file and comparison')
+  await openTabMenu('new file.txt')
+  await clickCloseOthers()
+  await dialogButton('Закрыть без сохранения')
+  assert.deepEqual(await tabNames(), ['new file.txt'], 'Close Others keeps the selected comparison')
+  await waitDiff(null, 'Not yet added')
+  await writeFile(changedCounter, 'same\ncopy edit\n')
+  console.log('PASS comparison tabs share the preview slot and support pinning, unpinning, closing and protecting unsaved edits')
+  await toggleWorktree('feat/dirty')
+  assert.deepEqual(await changedFileNames(), [])
+  assert.equal(await evaluate(() => document.querySelector('[aria-label="Удалить выбранную рабочую копию"]').disabled), false)
+  await removeSelected()
+  await dialogButton('Удалить копию')
+  await waitFor(() => evaluate(() => [...document.querySelectorAll('[data-sonner-toast]')].some((el) => el.textContent.includes('Не удалось удалить рабочую копию'))), 'Git refusal is shown')
+  assert.equal(await readFile(changedCounter, 'utf8'), 'same\ncopy edit\n')
+
+  await selectWorktree('feat/clean')
+  await waitGit('feat/clean (-0:+0)')
+  await toggleWorktree('feat/clean')
+  await waitFor(() => evaluate(() => document.querySelector('.worktree-changes')?.textContent === 'Изменённых файлов нет'), 'clean worktree has no changed files')
+  await removeSelected()
+  await waitFor(() => evaluate(() => document.querySelector('.dialog')?.textContent.includes('Копия чистая (feat/clean)')), 'confirmation identifies the copy')
+  await dialogButton('Отмена')
+  assert.ok((await stat(path.join(fixture, 'Копия чистая'))).isDirectory())
+  await removeSelected()
+  await dialogButton('Удалить копию')
+  await waitFor(() => evaluate(() => ![...document.querySelectorAll('.worktree-row strong')].some((el) => el.textContent === 'feat/clean')), 'removed copy disappears from the list')
+  await assert.rejects(stat(path.join(fixture, 'Копия чистая')), { code: 'ENOENT' })
+  git(root, 'show-ref', '--verify', 'refs/heads/feat/clean')
+  await selectWorktree('feat/dirty')
+  await waitGit('feat/dirty (-1:+1)')
+  await buttonText('.sidebar-views button', 'Файлы')
+  await waitGit('main (-1:+2)')
+  await rowClick(root + '/another.txt')
+  await waitFor(async () => (await tabText()).includes('Another file'), 'opening a file replaces a temporary comparison')
+  assert.deepEqual(await tabNames(), ['another.txt'])
+  await buttonText('.sidebar-views button', 'Рабочие копии')
+  await toggleWorktree('feat/dirty')
+  await waitFor(async () => (await changedFileNames()).includes('new file.txt'), 'working copy files reload')
+  await openChangedFile('new file.txt')
+  await waitDiff(null, 'Not yet added')
+  assert.deepEqual(await tabNames(), ['new file.txt'], 'opening a comparison replaces a temporary file')
+  console.log('PASS WSL Git branch and line counts, worktree selection, locked and dirty guards, cancellation and clean removal')
+
+  await stageInitialFile(nativeRoot, nativeRoot)
+  await evaluate(() => {
+    const select = document.querySelector('.project-select')
+    select.value = 'native'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await waitGit('main (-0:+2)')
+  commitBase(nativeRoot)
+  const nativeLinked = path.join(userData, 'Windows linked copy')
+  git(nativeRoot, 'worktree', 'add', '-b', 'feat/native', nativeLinked)
+  await waitGit('main (-0:+0)')
+  await buttonText('.sidebar-views button', 'Рабочие копии')
+  await selectWorktree('feat/native')
+  await waitGit('feat/native (-0:+0)')
+  const nativeOriginal = await readFile(path.join(nativeLinked, 'counter.txt'))
+  git(nativeLinked, 'mv', 'counter.txt', 'renamed file.txt')
+  await writeFile(path.join(nativeLinked, 'renamed file.txt'), 'same\nrenamed edit\n')
+  await toggleWorktree('feat/native')
+  await waitFor(async () => (await changedFileNames())[0] === 'counter.txt → renamed file.txt', 'expanded Windows worktree shows both names of a rename')
+  await openChangedFile('counter.txt → renamed file.txt')
+  await waitDiff('old', 'renamed edit')
+  assert.equal((await diffView()).title, 'counter.txt → renamed file.txt')
+  await writeFile(path.join(nativeLinked, 'renamed file.txt'), nativeOriginal)
+  git(nativeLinked, 'mv', 'renamed file.txt', 'counter.txt')
+  await waitFor(() => evaluate(() => document.querySelector('.worktree-changes')?.textContent === 'Изменённых файлов нет'), 'change list refreshes after the rename is undone')
+  await removeSelected()
+  await dialogButton('Удалить копию')
+  await waitFor(() => evaluate(() => document.querySelector('.worktree-list').textContent.includes('Рабочих копий нет')), 'last Windows copy disappears')
+  await assert.rejects(stat(nativeLinked), { code: 'ENOENT' })
+  console.log('PASS native Windows repository and linked worktree removal')
   assert.deepEqual(exceptions, [], 'no uncaught renderer errors')
 } finally {
   ws?.close()

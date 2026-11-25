@@ -10,6 +10,28 @@ export type Project = {
   rootPath: string
 }
 
+export type GitWorktree = {
+  path: string
+  branch: string | null
+  head: string
+  locked: boolean
+  prunable: boolean
+}
+
+export type GitChangedFile = { path: string; previousPath: string | null; code: string }
+
+export type GitFileDiff =
+  | { kind: 'text'; original: string; modified: string }
+  | { kind: 'binary' }
+  | { kind: 'too-large'; limit: number }
+  | { kind: 'unsupported' }
+
+export type GitProjectStatus = {
+  worktrees: GitWorktree[]
+  status: { path: string; branch: string | null; head: string; added: number; deleted: number } | null
+  changedFiles: GitChangedFile[] | null
+}
+
 export type DirEntry = {
   name: string
   path: string
@@ -56,6 +78,9 @@ export type DiscotechApi = {
   listProjects(): Promise<Project[]>
   addProject(): Promise<Project | null>
   removeProject(id: string): Promise<void>
+  getGitProjectStatus(projectId: string, worktreePath: string | null, includeChangedFiles: boolean): Promise<GitProjectStatus | null>
+  readGitFileDiff(projectId: string, worktreePath: string, file: GitChangedFile): Promise<GitFileDiff>
+  removeGitWorktree(projectId: string, worktree: GitWorktree): Promise<void>
   listDir(project: Project, projectPath: string): Promise<DirEntry[]>
   readFile(project: Project, projectPath: string): Promise<FileContent>
   /** Writes text; expectedMtimeMs null skips the on-disk change check (explicit overwrite). */

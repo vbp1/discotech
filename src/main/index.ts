@@ -4,6 +4,7 @@ import type { Project, SessionState, TransferMode, UsageProviderId } from '../sh
 import { loadSession, saveSession } from './session'
 import { createDir, createFileContent, deletePath, listDir, readFileContent, transferPaths, writeFileContent } from './files'
 import { handlePreviewScheme, PREVIEW_SCHEME, registerPreviewScheme, setPreviewDraft } from './preview'
+import { getGitProjectStatus, readGitFileDiff, removeGitWorktree } from './git'
 import { addProject, listProjects, removeProject } from './projects'
 import { searchContent, searchNames } from './search'
 import { getUsage } from './usage'
@@ -107,6 +108,9 @@ function registerIpc(): void {
     return addProject(distro, linuxPath)
   })
   ipcMain.handle('projects:remove', (_e, id: string) => removeProject(id))
+  ipcMain.handle('git:project-status', (_e, id, worktreePath, includeChangedFiles) => getGitProjectStatus(id, worktreePath, includeChangedFiles))
+  ipcMain.handle('git:file-diff', (_e, id, worktreePath, file) => readGitFileDiff(id, worktreePath, file))
+  ipcMain.handle('git:remove-worktree', (_e, id, worktree) => removeGitWorktree(id, worktree))
   ipcMain.handle('fs:list', (_e, project: Project, projectPath: string) => listDir(project, projectPath))
   ipcMain.handle('fs:read', (_e, project: Project, projectPath: string) => readFileContent(project, projectPath))
   ipcMain.handle('fs:write', (_e, project: Project, projectPath: string, text: string, expectedMtimeMs: number | null) =>

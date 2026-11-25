@@ -105,6 +105,6 @@ export function runInWsl(distro: string, command: string[]): Promise<WslResult> 
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => (stderr += chunk))
     child.on('error', (error) => reject(new Error(`wsl.exe failed to start: ${error.message}`)))
-    child.on('exit', (code) => resolve({ code, stdout, stderr }))
+    child.on('close', (code) => resolve({ code, stdout, stderr }))
   })
 }

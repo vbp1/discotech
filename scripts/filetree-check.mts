@@ -42,7 +42,7 @@ const root = createRoot(document.getElementById('root')!)
 let revision = 0
 function treeProps(key: number) {
   return {
-    key, project, activePath, fontSize: 13, clipboard: clip,
+    key, project, visible: true, activePath, fontSize: 13, clipboard: clip,
     onClipboardChange: (next: TreeClipboard | null) => { clip = next },
     onDeletePaths: async (paths: string[]) => {
       deletions.push(paths)

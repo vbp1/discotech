@@ -1,6 +1,6 @@
 import { FolderInput, Replace, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PathMove, Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
+import type { GitWorktree, PathMove, Project, SessionState, TransferMode, WatchStatus } from '../../shared/api'
 import type { TreeClipboard } from './FileTree'
 import { baseName, itemsWord, projectLocation } from './paths'
 import { toast } from 'sonner'
@@ -9,6 +9,7 @@ import { Toaster } from './Toaster'
 import { ConfirmHost, confirmDialog } from './confirm'
 import { Sidebar } from './Sidebar'
 import { UsageStatus } from './UsageStatus'
+import { useGitProject } from './useGitProject'
 import { errorText } from './errors'
 import { DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, useLayoutPrefs, type ZoomPanel } from './layoutPrefs'
 
@@ -35,6 +36,14 @@ export function App(): React.JSX.Element {
 
   // With no remembered project (first launch, cleared storage) the first one in the list opens.
   const project = projects.find((p) => p.id === activeId) ?? projects[0] ?? null
+  const [worktreeView, setWorktreeView] = useState<{ projectId: string; path: string | null; expanded: boolean } | null>(null)
+  const [gitRevision, setGitRevision] = useState(0)
+  const [removingWorktree, setRemovingWorktree] = useState(false)
+  const showWorktrees = worktreeView !== null && worktreeView.projectId === project?.id
+  const selectedWorktreePath = showWorktrees ? worktreeView.path : null
+  const expandWorktree = showWorktrees && worktreeView.expanded
+  const git = useGitProject(project?.id ?? null, selectedWorktreePath, expandWorktree, gitRevision)
+  const worktrees = git.data?.worktrees ?? []
   const { prefs, setSidebarWidth, zoom } = useLayoutPrefs()
   const sidebarRef = useRef<HTMLElement>(null)
   const mainRef = useRef<HTMLElement>(null)
@@ -185,9 +194,10 @@ export function App(): React.JSX.Element {
   }
 
   const openFile = useCallback((path: string, line?: number) => {
-    setOpenRequest({ path, line, nonce: Date.now() })
+    if (!project) return
+    setOpenRequest({ kind: 'file', projectId: project.id, path, line })
     setRevealPath(path)
-  }, [])
+  }, [project])
 
   // Open projects keep their tabs while another project is shown.
   const [visited, setVisited] = useState<Set<string>>(new Set())
@@ -201,6 +211,41 @@ export function App(): React.JSX.Element {
     setDirtyPaths((prev) => (prev[projectId] === paths ? prev : { ...prev, [projectId]: paths }))
   }, [])
   const totalDirty = Object.values(dirtyPaths).reduce((a, b) => a + b.size, 0)
+
+  const removeWorktree = async (tree: GitWorktree): Promise<void> => {
+    if (!project || removingWorktree) return
+    const key = (value: string): string => project.distro === null ? value.toLowerCase() : value
+    const prefix = key(tree.path) + '/'
+    const openUnsaved = projects.some((p) => {
+      if (p.distro !== project.distro) return false
+      const tabs = sessionRef.current?.projects[p.id]?.tabs ?? []
+      return [...(dirtyPaths[p.id] ?? [])].some((file) => key(file).startsWith(prefix)) ||
+        tabs.some((tab) => tab.orphanText !== undefined && key(tab.path).startsWith(prefix))
+    })
+    if (openUnsaved) {
+      toast.error('В редакторе есть несохранённый текст из этой рабочей копии.')
+      return
+    }
+    if (!(await confirmDialog({
+      title: 'Удалить рабочую копию?',
+      description: `Будет удалена папка ${tree.path} (${tree.branch ?? `HEAD ${tree.head.slice(0, 7)}`}).`,
+      confirmLabel: 'Удалить копию',
+      destructive: true,
+      icon: <Trash2 size={20} />
+    }))) return
+
+    setRemovingWorktree(true)
+    try {
+      await window.discotech.removeGitWorktree(project.id, tree)
+      setWorktreeView((view) => view?.projectId === project.id && view.path === tree.path ? { projectId: project.id, path: null, expanded: false } : view)
+      setPathNotice({ kind: 'deleted', projectId: project.id, paths: [tree.path], nonce: Date.now() })
+    } catch (error) {
+      toast.error('Не удалось удалить рабочую копию', { description: errorText(error) })
+    } finally {
+      setRemovingWorktree(false)
+      setGitRevision((revision) => revision + 1)
+    }
+  }
 
   /** Open tabs at or under `path` with unsaved edits; such files are never moved, replaced or deleted. */
   const unsavedUnder = (target: Project, path: string): string[] =>
@@ -367,6 +412,24 @@ export function App(): React.JSX.Element {
           onTransferPaths={transferPaths}
           onDeletePaths={deletePaths}
           activePath={revealPath}
+          worktrees={worktrees}
+          gitError={git.error}
+          showWorktrees={showWorktrees}
+          selectedWorktreePath={selectedWorktreePath}
+          expandedWorktree={expandWorktree}
+          changedFiles={git.changedFiles}
+          removingWorktree={removingWorktree}
+          onShowFiles={() => setWorktreeView(null)}
+          onSelectWorktree={(path, expanded) => {
+            if (!project) return
+            setWorktreeView({ projectId: project.id, path, expanded })
+          }}
+          onOpenChangedFile={(file) => {
+            if (project && selectedWorktreePath) {
+              setOpenRequest({ kind: 'diff', projectId: project.id, worktreePath: selectedWorktreePath, file })
+            }
+          }}
+          onRemoveWorktree={(tree) => void removeWorktree(tree)}
         />
         <div className="splitter" onPointerDown={startResize} onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)} />
         <main className="main" ref={mainRef}>
@@ -379,7 +442,7 @@ export function App(): React.JSX.Element {
                   project={p}
                   visible={p.id === project?.id}
                   fontSize={prefs.fontSize.editor}
-                  openRequest={p.id === project?.id ? openRequest : null}
+                  openRequest={p.id === openRequest?.projectId ? openRequest : null}
                   onActivePathChange={setRevealPath}
                   pathNotice={pathNotice?.projectId === p.id ? pathNotice : null}
                   onDirtyPathsChange={onDirtyPathsChange}
@@ -398,6 +461,15 @@ export function App(): React.JSX.Element {
       <footer className="status-bar">
         <UsageStatus distro={project?.distro ?? projects.find((p) => p.distro !== null)?.distro ?? null} />
         <span className="status-spacer" />
+        {git.status && (
+          <span className="status-git" title={`Изменения на диске относительно последнего коммита\n${git.status.path}`}>
+            {git.status.branch ?? `HEAD ${git.status.head.slice(0, 7)}`} (-{git.status.deleted}:+{git.status.added})
+          </span>
+        )}
+        {git.error && <span className="status-muted" title={git.error}>Статус Git недоступен</span>}
+        {selectedWorktreePath && git.data && !worktrees.some((tree) => tree.path === selectedWorktreePath && !tree.prunable) && (
+          <span className="status-muted" title={selectedWorktreePath}>Рабочая копия недоступна</span>
+        )}
         <span className="status-muted">{project ? projectLocation(project) : 'Нет проекта'}</span>
       </footer>
       <Toaster />

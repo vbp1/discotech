@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, FolderPlus, FolderTree, Route, Scissors, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ClipboardPaste, Copy, File, FileSymlink, Folder, FolderOpen, FolderPlus, FolderTree, RefreshCw, Route, Scissors, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { DirEntry, PathMove, Project, TransferMode } from '../../shared/api'
@@ -26,6 +26,7 @@ type Row =
 
 type Props = {
   project: Project
+  visible: boolean
   activePath: string | null
   fontSize: number
   onOpenFile(path: string): void
@@ -36,15 +37,19 @@ type Props = {
 }
 
 export function FileTree(props: Props): React.JSX.Element {
-  const { project, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPaths, onDeletePaths } = props
+  const { project, visible, activePath, fontSize, onOpenFile, clipboard, onClipboardChange, onTransferPaths, onDeletePaths } = props
   const [dirs, setDirs] = useState<Map<string, DirState>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
   const pendingReloads = useRef<Map<string, number>>(new Map())
 
   const moving = useRef(false)
+  const latestLoad = useRef(new Map<string, symbol>())
   const loadDirs = useCallback(
     async (paths: string[]): Promise<void> => {
+      // A manual refresh can overlap with the watcher or a folder's first read.
+      const request = Symbol()
+      for (const path of paths) latestLoad.current.set(path, request)
       const states = await Promise.all(paths.map(async (path): Promise<[string, DirState]> => {
         try {
           return [path, { entries: await window.discotech.listDir(project, path) }]
@@ -52,7 +57,8 @@ export function FileTree(props: Props): React.JSX.Element {
           return [path, { error: errorText(e) }]
         }
       }))
-      setDirs((prev) => new Map([...prev, ...states]))
+      const current = states.filter(([path]) => latestLoad.current.get(path) === request)
+      if (current.length > 0) setDirs((prev) => new Map([...prev, ...current]))
     },
     [project]
   )
@@ -65,6 +71,22 @@ export function FileTree(props: Props): React.JSX.Element {
   // Reload a listed directory when something inside it changes on disk.
   const dirsRef = useRef(dirs)
   dirsRef.current = dirs
+  const refreshTree = useCallback((): void => {
+    if (moving.current) return
+    void loadDirs([...new Set([project.rootPath, ...dirsRef.current.keys()])])
+  }, [loadDirs, project.rootPath])
+
+  useEffect(() => {
+    if (!visible) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.key !== 'F5' || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return
+      event.preventDefault()
+      if (!event.repeat) refreshTree()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [visible, refreshTree])
+
   useEffect(() => {
     const timers = pendingReloads.current
     const unsubscribe = window.discotech.onFsEvent((event) => {
@@ -466,6 +488,7 @@ export function FileTree(props: Props): React.JSX.Element {
   return (
     <div className="tree-pane">
       <div className="tree-toolbar">
+        {toolbarButton('Обновить дерево (F5)', <RefreshCw size={15} />, false, refreshTree)}
         {toolbarButton('Создать папку', <FolderPlus size={15} />, selection.size > 1, () => askFolder(selected))}
         {toolbarButton('Копировать (Ctrl+C)', <Copy size={15} />, selection.size === 0, () => copy([...selection], 'copy'))}
         {toolbarButton('Вырезать (Ctrl+X)', <Scissors size={15} />, selection.size === 0, () => copy([...selection], 'move'))}

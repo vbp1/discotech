@@ -4,8 +4,8 @@ import path from 'node:path'
 import type { DirEntry, FileContent, PathMove, Project, TransferMode, TransferPathsResult, WriteResult } from '../shared/api'
 import { assertInsideProject, osPath, runInWsl } from './wsl'
 
-const MAX_TEXT_BYTES = 5 * 1024 * 1024
-const BINARY_SNIFF_BYTES = 8192
+export const MAX_TEXT_BYTES = 5 * 1024 * 1024
+export const BINARY_SNIFF_BYTES = 8192
 const HIDDEN_NAMES = new Set(['.git'])
 
 // Windows cannot follow Linux symlinks over \\wsl.localhost: lstat/readlink fail with
